@@ -26,7 +26,8 @@ function toolDisplayName(name: string): string {
     read: "ReadFile",
     write: "WriteFile",
     edit: "EditFile",
-    bash: "Bash",
+    exec: "Exec",
+    process: "Process",
     grep: "Grep",
     find: "FindFiles",
     ls: "ListDir",
@@ -51,8 +52,10 @@ function formatToolArgs(name: string, args: unknown): string {
       return [get("glob") || get("pattern"), get("path") || get("directory")].filter(Boolean).join(" ");
     case "ls":
       return get("path") || get("directory");
-    case "bash":
+    case "exec":
       return get("command");
+    case "process":
+      return [get("action"), get("id")].filter(Boolean).join(" ");
     default:
       return "";
   }

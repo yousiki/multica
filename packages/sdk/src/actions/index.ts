@@ -27,4 +27,4 @@ export {
   type UpdateGatewayResult,
 } from "./rpc";
 
-export { StreamAction, type StreamPayload } from "./stream";
+export { StreamAction, type StreamState, type StreamPayload } from "./stream";

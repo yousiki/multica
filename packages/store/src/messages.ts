@@ -10,6 +10,7 @@ export interface Message {
 
 interface MessagesState {
   messages: Message[]
+  streamingIds: Set<string>
 }
 
 interface MessagesActions {
@@ -18,12 +19,16 @@ interface MessagesActions {
   updateMessage: (id: string, content: string) => void
   loadMessages: (agentId: string, msgs: Message[]) => void
   clearMessages: (agentId?: string) => void
+  startStream: (streamId: string, agentId: string) => void
+  appendStream: (streamId: string, content: string) => void
+  endStream: (streamId: string, content: string) => void
 }
 
 export type MessagesStore = MessagesState & MessagesActions
 
 export const useMessagesStore = create<MessagesStore>()((set, get) => ({
   messages: [],
+  streamingIds: new Set<string>(),
 
   addUserMessage: (content, agentId) => {
     set((s) => ({
@@ -53,5 +58,33 @@ export const useMessagesStore = create<MessagesStore>()((set, get) => ({
     set((s) => ({
       messages: agentId ? s.messages.filter((m) => m.agentId !== agentId) : [],
     }))
+  },
+
+  startStream: (streamId, agentId) => {
+    set((s) => {
+      const ids = new Set(s.streamingIds)
+      ids.add(streamId)
+      return {
+        messages: [...s.messages, { id: streamId, role: "assistant" as const, content: "", agentId }],
+        streamingIds: ids,
+      }
+    })
+  },
+
+  appendStream: (streamId, content) => {
+    set((s) => ({
+      messages: s.messages.map((m) => (m.id === streamId ? { ...m, content } : m)),
+    }))
+  },
+
+  endStream: (streamId, content) => {
+    set((s) => {
+      const ids = new Set(s.streamingIds)
+      ids.delete(streamId)
+      return {
+        messages: s.messages.map((m) => (m.id === streamId ? { ...m, content } : m)),
+        streamingIds: ids,
+      }
+    })
   },
 }))

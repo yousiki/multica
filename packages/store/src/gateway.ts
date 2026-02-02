@@ -1,5 +1,5 @@
 import { create } from "zustand"
-import { GatewayClient, type ConnectionState, type DeviceInfo, type SendErrorResponse } from "@multica/sdk"
+import { GatewayClient, StreamAction, type ConnectionState, type DeviceInfo, type SendErrorResponse, type StreamPayload } from "@multica/sdk"
 import { useMessagesStore } from "./messages"
 
 const DEFAULT_GATEWAY_URL = "http://localhost:3000"
@@ -45,6 +45,32 @@ export const useGatewayStore = create<GatewayStore>()((set, get) => ({
     })
       .onStateChange((connectionState) => set({ connectionState }))
       .onMessage((msg) => {
+        // Handle streaming messages
+        if (msg.action === StreamAction) {
+          const payload = msg.payload as StreamPayload
+          const store = useMessagesStore.getState()
+          switch (payload.state) {
+            case "delta": {
+              const exists = store.messages.some((m) => m.id === payload.streamId)
+              if (!exists) {
+                store.startStream(payload.streamId, payload.agentId)
+              }
+              if (payload.content) {
+                store.appendStream(payload.streamId, payload.content)
+              }
+              break
+            }
+            case "final":
+              store.endStream(payload.streamId, payload.content ?? "")
+              break
+            case "error":
+              store.endStream(payload.streamId, `[error] ${payload.error}`)
+              break
+          }
+          return
+        }
+
+        // Fallback: complete message handling
         const payload = msg.payload as { agentId?: string; content?: string }
         if (payload?.agentId && payload?.content) {
           useMessagesStore.getState().addAssistantMessage(payload.content, payload.agentId)

@@ -241,6 +241,11 @@ export class Agent {
     });
   }
 
+  /** Subscribe to agent events (returns unsubscribe function) */
+  subscribe(fn: (event: AgentEvent) => void): () => void {
+    return this.agent.subscribe(fn);
+  }
+
   async run(prompt: string): Promise<AgentRunResult> {
     this.output.state.lastAssistantText = "";
     await this.agent.prompt(prompt);

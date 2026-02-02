@@ -3,6 +3,7 @@ import {
   type ConnectionState,
   RequestAction,
   ResponseAction,
+  StreamAction,
   type RequestPayload,
   type ResponseSuccessPayload,
   type ResponseErrorPayload,
@@ -143,7 +144,15 @@ export class Hub {
       addAgentRecord({ id: agent.sessionId, createdAt: Date.now() });
     }
 
-    // Internally consume messages produced by agent
+    // Forward streaming events to the requesting client
+    agent.onStream((payload) => {
+      const targetDeviceId = this.agentSenders.get(agent.sessionId);
+      if (targetDeviceId) {
+        this.client.send(targetDeviceId, StreamAction, payload);
+      }
+    });
+
+    // Internally consume messages produced by agent (fallback for non-stream scenarios)
     void this.consumeAgent(agent);
 
     console.log(`Agent created: ${agent.sessionId}`);

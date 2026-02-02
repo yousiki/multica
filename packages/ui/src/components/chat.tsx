@@ -6,6 +6,7 @@ import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { ChatInput } from "@multica/ui/components/chat-input";
 import { MemoizedMarkdown } from "@multica/ui/components/markdown";
+import { StreamingMarkdown } from "@multica/ui/components/markdown/StreamingMarkdown";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { UserIcon, Copy01Icon, CheckmarkCircle02Icon } from "@hugeicons/core-free-icons";
 import { toast } from "@multica/ui/components/ui/sonner";
@@ -27,6 +28,7 @@ export function Chat() {
   const gwState = useGatewayStore((s) => s.connectionState)
 
   const messages = useMessagesStore((s) => s.messages)
+  const streamingIds = useMessagesStore((s) => s.streamingIds)
   const filtered = useMemo(() => messages.filter(m => m.agentId === activeAgentId), [messages, activeAgentId])
 
   const handleSend = useCallback((text: string) => {
@@ -99,25 +101,32 @@ export function Chat() {
           </div>
         ) : (
           <div className="px-4 py-6 space-y-6 max-w-4xl mx-auto">
-            {filtered.map((msg) => (
-              <div
-                key={msg.id}
-                className={cn(
-                  "flex",
-                  msg.role === "user" ? "justify-end" : "justify-start"
-                )}
-              >
+            {filtered.map((msg) => {
+              const isStreaming = streamingIds.has(msg.id)
+              return (
                 <div
+                  key={msg.id}
                   className={cn(
-                    msg.role === "user" ? "bg-muted rounded-md max-w-[60%] p-1 px-2.5" : "w-full p-1 px-2.5"
+                    "flex",
+                    msg.role === "user" ? "justify-end" : "justify-start"
                   )}
                 >
-                  <MemoizedMarkdown mode="minimal" id={msg.id}>
-                    {msg.content}
-                  </MemoizedMarkdown>
+                  <div
+                    className={cn(
+                      msg.role === "user" ? "bg-muted rounded-md max-w-[60%] p-1 px-2.5" : "w-full p-1 px-2.5"
+                    )}
+                  >
+                    {isStreaming ? (
+                      <StreamingMarkdown content={msg.content} isStreaming={true} mode="minimal" />
+                    ) : (
+                      <MemoizedMarkdown mode="minimal" id={msg.id}>
+                        {msg.content}
+                      </MemoizedMarkdown>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </main>

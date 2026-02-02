@@ -1,5 +1,6 @@
 import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
 import { colors, createSpinner } from "./colors.js";
+import { extractText } from "../extract-text.js";
 
 export type AgentOutputState = {
   lastAssistantText: string;
@@ -11,16 +12,6 @@ export type AgentOutput = {
   state: AgentOutputState;
   handleEvent: (event: AgentEvent) => void;
 };
-
-function extractText(message: AgentMessage | undefined): string {
-  if (!message || typeof message !== "object" || !("content" in message)) return "";
-  const content = (message as { content?: Array<{ type: string; text?: string }> }).content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((c) => c.type === "text")
-    .map((c) => c.text ?? "")
-    .join("");
-}
 
 function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + "…" : s;

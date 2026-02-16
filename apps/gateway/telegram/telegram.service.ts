@@ -721,13 +721,13 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     return message.includes("METHOD_NOT_FOUND") || message.includes("Unknown RPC method");
   }
 
-  private async createConversationViaRpc(deviceId: string, hubId: string): Promise<{ id: string }> {
+  private async createConversationViaRpc(deviceId: string, hubId: string, agentId?: string): Promise<{ id: string }> {
     try {
-      const created = await this.sendRpc<Record<string, never>, CreateConversationResult>(
+      const created = await this.sendRpc<{ agentId?: string }, CreateConversationResult>(
         deviceId,
         hubId,
         "createConversation",
-        {},
+        agentId ? { agentId } : {},
         VERIFY_TIMEOUT_MS,
         "Create session request timed out",
       );
@@ -792,7 +792,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      const created = await this.createConversationViaRpc(user.deviceId, user.hubId);
+      const created = await this.createConversationViaRpc(user.deviceId, user.hubId, user.agentId);
 
       await this.userStore.upsert({
         telegramUserId: user.telegramUserId,

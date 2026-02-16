@@ -52,4 +52,24 @@ export class AppController {
     const ok = this.hub.closeAgent(id);
     return { ok };
   }
+
+  @Get("conversations")
+  listConversations() {
+    return this.hub.listConversations().map((id) => {
+      const conversation = this.hub.getConversation(id);
+      return { id, closed: conversation?.closed ?? true };
+    });
+  }
+
+  @Post("conversations")
+  createConversation(@Body() body?: { id?: string; agentId?: string }) {
+    const conversation = this.hub.createConversation(body?.id, { agentId: body?.agentId });
+    return { id: conversation.sessionId };
+  }
+
+  @Delete("conversations/:id")
+  deleteConversation(@Param("id") id: string) {
+    const ok = this.hub.closeConversation(id);
+    return { ok };
+  }
 }

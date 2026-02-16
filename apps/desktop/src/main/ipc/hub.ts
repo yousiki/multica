@@ -107,12 +107,15 @@ export function registerHubIpcHandlers(): void {
   ipcMain.handle('hub:init', async () => {
     await initializeHub()
     const h = getHub()
+    const defaultConversationId = defaultAgentId
+      ? (h.getAgentMainConversationId(defaultAgentId) ?? defaultAgentId)
+      : null
     return {
       hubId: h.hubId,
       url: h.url,
       connectionState: h.connectionState,
       defaultAgentId,
-      defaultConversationId: defaultAgentId,
+      defaultConversationId,
     }
   })
 
@@ -144,7 +147,7 @@ export function registerHubIpcHandlers(): void {
       gatewayUrl: h.url,
       defaultAgent: agent
         ? {
-            agentId: agent.sessionId,
+            agentId: defaultAgentId ?? agent.sessionId,
             status: agent.closed ? 'closed' : 'idle',
           }
         : null,
@@ -160,7 +163,7 @@ export function registerHubIpcHandlers(): void {
       return null
     }
     return {
-      agentId: agent.sessionId,
+      agentId: defaultAgentId ?? agent.sessionId,
       status: agent.closed ? 'closed' : 'idle',
     }
   })
@@ -301,16 +304,18 @@ export function registerHubIpcHandlers(): void {
    */
   ipcMain.handle('localChat:subscribe', async (_event, agentId: string) => {
     const h = getHub()
-    const agent = h.getAgent(agentId)
-    if (!agent) {
-      return { error: `Agent not found: ${agentId}` }
+    const conversationId = agentId
+    const conversation = h.getConversation(conversationId)
+    if (!conversation) {
+      return { error: `Agent not found: ${conversationId}` }
     }
-    if (agent.closed) {
-      return { error: `Agent is closed: ${agentId}` }
+    if (conversation.closed) {
+      return { error: `Agent is closed: ${conversationId}` }
     }
+    const logicalAgentId = h.getConversationAgentId(conversationId) ?? conversationId
 
     // Already subscribed?
-    if (ipcAgentSubscriptions.has(agentId)) {
+    if (ipcAgentSubscriptions.has(conversationId)) {
       return { ok: true, alreadySubscribed: true }
     }
 
@@ -318,7 +323,7 @@ export function registerHubIpcHandlers(): void {
     let currentStreamId: string | null = null
 
     // Subscribe to agent events using the multi-subscriber mechanism
-    const unsubscribe = agent.subscribe((event) => {
+    const unsubscribe = conversation.subscribe((event) => {
       if (!mainWindowRef || mainWindowRef.isDestroyed()) {
         return
       }
@@ -329,8 +334,8 @@ export function registerHubIpcHandlers(): void {
       if (isPassthroughEvent) {
         safeLog(`[IPC] Sending ${event.type} event to renderer`)
         mainWindowRef.webContents.send('localChat:event', {
-          agentId,
-          conversationId: agentId,
+          agentId: logicalAgentId,
+          conversationId,
           streamId: null,
           event,
         })
@@ -358,8 +363,8 @@ export function registerHubIpcHandlers(): void {
 
       safeLog(`[IPC] Sending event to renderer: ${event.type}, streamId: ${currentStreamId}`)
       mainWindowRef.webContents.send('localChat:event', {
-        agentId,
-        conversationId: agentId,
+        agentId: logicalAgentId,
+        conversationId,
         streamId: currentStreamId,
         event,
       })
@@ -370,16 +375,16 @@ export function registerHubIpcHandlers(): void {
       }
     })
 
-    ipcAgentSubscriptions.set(agentId, unsubscribe)
+    ipcAgentSubscriptions.set(conversationId, unsubscribe)
 
     // Register local approval handler so exec approval requests route via IPC
-    h.setLocalApprovalHandler(agentId, (payload) => {
+    h.setLocalApprovalHandler(conversationId, (payload) => {
       if (!mainWindowRef || mainWindowRef.isDestroyed()) return
       safeLog(`[IPC] Sending approval request to renderer: ${payload.approvalId}`)
       mainWindowRef.webContents.send('localChat:approval', payload)
     })
 
-    safeLog(`[IPC] Local chat subscribed to agent: ${agentId}`)
+    safeLog(`[IPC] Local chat subscribed to conversation: ${conversationId}`)
 
     return { ok: true }
   })
@@ -457,7 +462,7 @@ export function registerHubIpcHandlers(): void {
     const source = { type: 'local' as const }
     // Broadcast as local source (for consistency, though UI already knows)
     h.broadcastInbound({
-      agentId,
+      agentId: h.getConversationAgentId(resolvedConversationId) ?? agentId,
       conversationId: resolvedConversationId,
       content,
       source,

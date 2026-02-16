@@ -60,11 +60,13 @@ pnpm dev:local:archive
 
 Compatibility behavior:
 
-- If only `agentId` is provided, the runtime resolves `conversationId = agentId`.
+- If only `agentId` is provided, runtime resolves to that agent's `mainConversationId`.
+- Legacy fallback is still supported: when no mapping exists, `conversationId = agentId`.
 - New integrations should pass `conversationId` explicitly.
 - Hub RPC supports both naming sets:
   - Legacy: `createAgent/listAgents/deleteAgent`
   - Conversation-first aliases: `createConversation/listConversations/deleteConversation`
+  - `createConversation` supports optional `agentId` to create a new thread under a specific agent.
 
 Telegram behavior:
 

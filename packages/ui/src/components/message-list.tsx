@@ -119,8 +119,8 @@ export const MessageList = memo(function MessageList({
               <ThinkingItem thinking={thinking} isStreaming={isStreaming} />
             )}
 
-            {/* Render text content (if any) */}
-            {(text || isStreaming) && (
+            {/* Render text content (if any) - require actual text, not just streaming state */}
+            {text && (
               <div
                 className={cn(
                   "flex items-center gap-1.5",

@@ -105,94 +105,10 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus) chi.Route
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Auth(queries))
 
-		// Auth
+		// --- User-scoped routes (no workspace context required) ---
 		r.Get("/api/me", h.GetMe)
 		r.Patch("/api/me", h.UpdateMe)
 
-		// Issues
-		r.Route("/api/issues", func(r chi.Router) {
-			r.With(middleware.RequireWorkspaceMember(queries)).Get("/", h.ListIssues)
-			r.With(middleware.RequireWorkspaceMember(queries)).Post("/", h.CreateIssue)
-			r.With(middleware.RequireWorkspaceMember(queries)).Post("/batch-update", h.BatchUpdateIssues)
-			r.With(middleware.RequireWorkspaceMember(queries)).Post("/batch-delete", h.BatchDeleteIssues)
-			r.Route("/{id}", func(r chi.Router) {
-				r.Get("/", h.GetIssue)
-				r.Put("/", h.UpdateIssue)
-				r.Delete("/", h.DeleteIssue)
-				r.Post("/comments", h.CreateComment)
-				r.Get("/comments", h.ListComments)
-				r.Get("/timeline", h.ListTimeline)
-				r.Get("/subscribers", h.ListIssueSubscribers)
-				r.Post("/subscribe", h.SubscribeToIssue)
-				r.Post("/unsubscribe", h.UnsubscribeFromIssue)
-			})
-		})
-
-		// Comments
-		r.Route("/api/comments/{commentId}", func(r chi.Router) {
-			r.Put("/", h.UpdateComment)
-			r.Delete("/", h.DeleteComment)
-		})
-
-		// Agents
-		r.Route("/api/agents", func(r chi.Router) {
-			r.With(middleware.RequireWorkspaceMember(queries)).Get("/", h.ListAgents)
-			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Post("/", h.CreateAgent)
-			r.Route("/{id}", func(r chi.Router) {
-				r.Get("/", h.GetAgent)
-				r.Put("/", h.UpdateAgent)
-				r.Delete("/", h.DeleteAgent)
-				r.Get("/tasks", h.ListAgentTasks)
-				r.Get("/skills", h.ListAgentSkills)
-				r.Put("/skills", h.SetAgentSkills)
-			})
-		})
-
-		// Skills
-		r.Route("/api/skills", func(r chi.Router) {
-			r.With(middleware.RequireWorkspaceMember(queries)).Get("/", h.ListSkills)
-			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Post("/", h.CreateSkill)
-			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Post("/import", h.ImportSkill)
-			r.Route("/{id}", func(r chi.Router) {
-				r.Get("/", h.GetSkill)
-				r.Put("/", h.UpdateSkill)
-				r.Delete("/", h.DeleteSkill)
-				r.Get("/files", h.ListSkillFiles)
-				r.Put("/files", h.UpsertSkillFile)
-				r.Delete("/files/{fileId}", h.DeleteSkillFile)
-			})
-		})
-
-		r.Route("/api/runtimes", func(r chi.Router) {
-			r.With(middleware.RequireWorkspaceMember(queries)).Get("/", h.ListAgentRuntimes)
-			r.Get("/{runtimeId}/usage", h.GetRuntimeUsage)
-			r.Get("/{runtimeId}/activity", h.GetRuntimeTaskActivity)
-			r.Post("/{runtimeId}/ping", h.InitiatePing)
-			r.Get("/{runtimeId}/ping/{pingId}", h.GetPing)
-		})
-
-		r.Post("/api/daemon/pairing-sessions/{token}/approve", h.ApproveDaemonPairingSession)
-
-		// Personal Access Tokens
-		r.Route("/api/tokens", func(r chi.Router) {
-			r.Get("/", h.ListPersonalAccessTokens)
-			r.Post("/", h.CreatePersonalAccessToken)
-			r.Delete("/{id}", h.RevokePersonalAccessToken)
-		})
-
-		// Inbox
-		r.Route("/api/inbox", func(r chi.Router) {
-			r.Get("/", h.ListInbox)
-			r.Get("/unread-count", h.CountUnreadInbox)
-			r.Post("/mark-all-read", h.MarkAllInboxRead)
-			r.Post("/archive-all", h.ArchiveAllInbox)
-			r.Post("/archive-all-read", h.ArchiveAllReadInbox)
-			r.Post("/archive-completed", h.ArchiveCompletedInbox)
-			r.Post("/{id}/read", h.MarkInboxRead)
-			r.Post("/{id}/archive", h.ArchiveInboxItem)
-		})
-
-		// Workspaces
 		r.Route("/api/workspaces", func(r chi.Router) {
 			r.Get("/", h.ListWorkspaces)
 			r.Post("/", h.CreateWorkspace)
@@ -217,6 +133,94 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus) chi.Route
 				})
 				// Owner-only access
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)
+			})
+		})
+
+		r.Route("/api/tokens", func(r chi.Router) {
+			r.Get("/", h.ListPersonalAccessTokens)
+			r.Post("/", h.CreatePersonalAccessToken)
+			r.Delete("/{id}", h.RevokePersonalAccessToken)
+		})
+
+		r.Post("/api/daemon/pairing-sessions/{token}/approve", h.ApproveDaemonPairingSession)
+
+		// --- Workspace-scoped routes (all require workspace membership) ---
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.RequireWorkspaceMember(queries))
+
+			// Issues
+			r.Route("/api/issues", func(r chi.Router) {
+				r.Get("/", h.ListIssues)
+				r.Post("/", h.CreateIssue)
+				r.Post("/batch-update", h.BatchUpdateIssues)
+				r.Post("/batch-delete", h.BatchDeleteIssues)
+				r.Route("/{id}", func(r chi.Router) {
+					r.Get("/", h.GetIssue)
+					r.Put("/", h.UpdateIssue)
+					r.Delete("/", h.DeleteIssue)
+					r.Post("/comments", h.CreateComment)
+					r.Get("/comments", h.ListComments)
+					r.Get("/timeline", h.ListTimeline)
+					r.Get("/subscribers", h.ListIssueSubscribers)
+					r.Post("/subscribe", h.SubscribeToIssue)
+					r.Post("/unsubscribe", h.UnsubscribeFromIssue)
+				})
+			})
+
+			// Comments
+			r.Route("/api/comments/{commentId}", func(r chi.Router) {
+				r.Put("/", h.UpdateComment)
+				r.Delete("/", h.DeleteComment)
+			})
+
+			// Agents
+			r.Route("/api/agents", func(r chi.Router) {
+				r.Get("/", h.ListAgents)
+				r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Post("/", h.CreateAgent)
+				r.Route("/{id}", func(r chi.Router) {
+					r.Get("/", h.GetAgent)
+					r.Put("/", h.UpdateAgent)
+					r.Delete("/", h.DeleteAgent)
+					r.Get("/tasks", h.ListAgentTasks)
+					r.Get("/skills", h.ListAgentSkills)
+					r.Put("/skills", h.SetAgentSkills)
+				})
+			})
+
+			// Skills
+			r.Route("/api/skills", func(r chi.Router) {
+				r.Get("/", h.ListSkills)
+				r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Post("/", h.CreateSkill)
+				r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Post("/import", h.ImportSkill)
+				r.Route("/{id}", func(r chi.Router) {
+					r.Get("/", h.GetSkill)
+					r.Put("/", h.UpdateSkill)
+					r.Delete("/", h.DeleteSkill)
+					r.Get("/files", h.ListSkillFiles)
+					r.Put("/files", h.UpsertSkillFile)
+					r.Delete("/files/{fileId}", h.DeleteSkillFile)
+				})
+			})
+
+			// Runtimes
+			r.Route("/api/runtimes", func(r chi.Router) {
+				r.Get("/", h.ListAgentRuntimes)
+				r.Get("/{runtimeId}/usage", h.GetRuntimeUsage)
+				r.Get("/{runtimeId}/activity", h.GetRuntimeTaskActivity)
+				r.Post("/{runtimeId}/ping", h.InitiatePing)
+				r.Get("/{runtimeId}/ping/{pingId}", h.GetPing)
+			})
+
+			// Inbox
+			r.Route("/api/inbox", func(r chi.Router) {
+				r.Get("/", h.ListInbox)
+				r.Get("/unread-count", h.CountUnreadInbox)
+				r.Post("/mark-all-read", h.MarkAllInboxRead)
+				r.Post("/archive-all", h.ArchiveAllInbox)
+				r.Post("/archive-all-read", h.ArchiveAllReadInbox)
+				r.Post("/archive-completed", h.ArchiveCompletedInbox)
+				r.Post("/{id}/read", h.MarkInboxRead)
+				r.Post("/{id}/archive", h.ArchiveInboxItem)
 			})
 		})
 	})

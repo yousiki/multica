@@ -7,6 +7,10 @@ ORDER BY created_at ASC;
 SELECT * FROM agent
 WHERE id = $1;
 
+-- name: GetAgentInWorkspace :one
+SELECT * FROM agent
+WHERE id = $1 AND workspace_id = $2;
+
 -- name: CreateAgent :one
 INSERT INTO agent (
     workspace_id, name, description, avatar_url, runtime_mode,

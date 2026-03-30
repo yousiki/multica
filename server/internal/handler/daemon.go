@@ -227,8 +227,9 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Include workspace repos so the daemon can set up worktrees.
+	// Include workspace ID and repos so the daemon can set up worktrees.
 	if issue, err := h.Queries.GetIssue(r.Context(), task.IssueID); err == nil {
+		resp.WorkspaceID = uuidToString(issue.WorkspaceID)
 		if ws, err := h.Queries.GetWorkspace(r.Context(), issue.WorkspaceID); err == nil && ws.Repos != nil {
 			var repos []RepoData
 			if json.Unmarshal(ws.Repos, &repos) == nil && len(repos) > 0 {

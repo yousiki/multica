@@ -11,6 +11,10 @@ LIMIT $4 OFFSET $5;
 SELECT * FROM inbox_item
 WHERE id = $1;
 
+-- name: GetInboxItemInWorkspace :one
+SELECT * FROM inbox_item
+WHERE id = $1 AND workspace_id = $2;
+
 -- name: CreateInboxItem :one
 INSERT INTO inbox_item (
     workspace_id, recipient_type, recipient_id,

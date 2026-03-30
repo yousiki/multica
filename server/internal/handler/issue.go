@@ -521,14 +521,14 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal(raw, &rawUpdates)
 	}
 
+	workspaceID := resolveWorkspaceID(r)
 	updated := 0
 	for _, issueID := range req.IssueIDs {
-		prevIssue, err := h.Queries.GetIssue(r.Context(), parseUUID(issueID))
+		prevIssue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+			ID:          parseUUID(issueID),
+			WorkspaceID: parseUUID(workspaceID),
+		})
 		if err != nil {
-			continue
-		}
-		workspaceID := uuidToString(prevIssue.WorkspaceID)
-		if _, ok := h.requireWorkspaceMember(w, r, workspaceID, ""); !ok {
 			continue
 		}
 
@@ -637,14 +637,14 @@ func (h *Handler) BatchDeleteIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	workspaceID := resolveWorkspaceID(r)
 	deleted := 0
 	for _, issueID := range req.IssueIDs {
-		issue, err := h.Queries.GetIssue(r.Context(), parseUUID(issueID))
+		issue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+			ID:          parseUUID(issueID),
+			WorkspaceID: parseUUID(workspaceID),
+		})
 		if err != nil {
-			continue
-		}
-		workspaceID := uuidToString(issue.WorkspaceID)
-		if _, ok := h.requireWorkspaceMember(w, r, workspaceID, ""); !ok {
 			continue
 		}
 

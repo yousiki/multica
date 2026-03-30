@@ -9,6 +9,10 @@ ORDER BY name ASC;
 SELECT * FROM skill
 WHERE id = $1;
 
+-- name: GetSkillInWorkspace :one
+SELECT * FROM skill
+WHERE id = $1 AND workspace_id = $2;
+
 -- name: CreateSkill :one
 INSERT INTO skill (workspace_id, name, description, content, config, created_by)
 VALUES ($1, $2, $3, $4, $5, $6)

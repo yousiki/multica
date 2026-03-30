@@ -49,7 +49,10 @@ func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	comments, err := h.Queries.ListComments(r.Context(), issue.ID)
+	comments, err := h.Queries.ListComments(r.Context(), db.ListCommentsParams{
+		IssueID:     issue.ID,
+		WorkspaceID: issue.WorkspaceID,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list comments")
 		return

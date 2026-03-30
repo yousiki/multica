@@ -706,7 +706,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, taskLo
 		"MULTICA_TOKEN":        d.client.Token(),
 		"MULTICA_SERVER_URL":   d.cfg.ServerBaseURL,
 		"MULTICA_DAEMON_PORT":  fmt.Sprintf("%d", d.cfg.HealthPort),
-		"MULTICA_WORKSPACE_ID": d.workspaceIDForRuntime(task.RuntimeID),
+		"MULTICA_WORKSPACE_ID": task.WorkspaceID,
 		"MULTICA_AGENT_NAME":   agentName,
 		"MULTICA_AGENT_ID":     task.AgentID,
 		"MULTICA_TASK_ID":      task.ID,
@@ -803,20 +803,6 @@ func repoDataToInfo(repos []RepoData) []repocache.RepoInfo {
 		info[i] = repocache.RepoInfo{URL: r.URL, Description: r.Description}
 	}
 	return info
-}
-
-// workspaceIDForRuntime returns the workspace ID that a runtime belongs to.
-func (d *Daemon) workspaceIDForRuntime(runtimeID string) string {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	for _, ws := range d.workspaces {
-		for _, rid := range ws.runtimeIDs {
-			if rid == runtimeID {
-				return ws.workspaceID
-			}
-		}
-	}
-	return ""
 }
 
 func convertReposForEnv(repos []RepoData) []execenv.RepoContextForEnv {

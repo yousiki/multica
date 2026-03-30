@@ -45,7 +45,10 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	comments, err := h.Queries.ListComments(r.Context(), issue.ID)
+	comments, err := h.Queries.ListComments(r.Context(), db.ListCommentsParams{
+		IssueID:     issue.ID,
+		WorkspaceID: issue.WorkspaceID,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list comments")
 		return
@@ -105,12 +108,13 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
 
 	comment, err := h.Queries.CreateComment(r.Context(), db.CreateCommentParams{
-		IssueID:    issue.ID,
-		AuthorType: authorType,
-		AuthorID:   parseUUID(authorID),
-		Content:    req.Content,
-		Type:       req.Type,
-		ParentID:   parentID,
+		IssueID:     issue.ID,
+		WorkspaceID: issue.WorkspaceID,
+		AuthorType:  authorType,
+		AuthorID:    parseUUID(authorID),
+		Content:     req.Content,
+		Type:        req.Type,
+		ParentID:    parentID,
 	})
 	if err != nil {
 		slog.Warn("create comment failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
@@ -147,26 +151,24 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Load comment to check ownership
-	existing, err := h.Queries.GetComment(r.Context(), parseUUID(commentId))
+	// Load comment scoped to current workspace.
+	workspaceID := resolveWorkspaceID(r)
+	existing, err := h.Queries.GetCommentInWorkspace(r.Context(), db.GetCommentInWorkspaceParams{
+		ID:          parseUUID(commentId),
+		WorkspaceID: parseUUID(workspaceID),
+	})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "comment not found")
 		return
 	}
 
-	// Load issue to get workspace
-	issue, err := h.Queries.GetIssue(r.Context(), existing.IssueID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "comment not found")
-		return
-	}
-
-	member, ok := h.requireWorkspaceMember(w, r, uuidToString(issue.WorkspaceID), "comment not found")
+	member, ok := h.workspaceMember(w, r, workspaceID)
 	if !ok {
 		return
 	}
 
-	isAuthor := existing.AuthorType == "member" && uuidToString(existing.AuthorID) == userID
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	isAuthor := existing.AuthorType == actorType && uuidToString(existing.AuthorID) == actorID
 	isAdmin := roleAllowed(member.Role, "owner", "admin")
 	if !isAuthor && !isAdmin {
 		writeError(w, http.StatusForbidden, "only comment author or admin can edit")
@@ -196,9 +198,8 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := commentToResponse(comment)
-	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
 	slog.Info("comment updated", append(logger.RequestAttrs(r), "comment_id", commentId)...)
-	h.publish(protocol.EventCommentUpdated, uuidToString(issue.WorkspaceID), actorType, actorID, map[string]any{"comment": resp})
+	h.publish(protocol.EventCommentUpdated, workspaceID, actorType, actorID, map[string]any{"comment": resp})
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -210,26 +211,24 @@ func (h *Handler) DeleteComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get the comment first to know the issue_id for the broadcast
-	comment, err := h.Queries.GetComment(r.Context(), parseUUID(commentId))
+	// Load comment scoped to current workspace.
+	workspaceID := resolveWorkspaceID(r)
+	comment, err := h.Queries.GetCommentInWorkspace(r.Context(), db.GetCommentInWorkspaceParams{
+		ID:          parseUUID(commentId),
+		WorkspaceID: parseUUID(workspaceID),
+	})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "comment not found")
 		return
 	}
 
-	// Load issue to get workspace
-	issue, err := h.Queries.GetIssue(r.Context(), comment.IssueID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "comment not found")
-		return
-	}
-
-	member, ok := h.requireWorkspaceMember(w, r, uuidToString(issue.WorkspaceID), "comment not found")
+	member, ok := h.workspaceMember(w, r, workspaceID)
 	if !ok {
 		return
 	}
 
-	isAuthor := comment.AuthorType == "member" && uuidToString(comment.AuthorID) == userID
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	isAuthor := comment.AuthorType == actorType && uuidToString(comment.AuthorID) == actorID
 	isAdmin := roleAllowed(member.Role, "owner", "admin")
 	if !isAuthor && !isAdmin {
 		writeError(w, http.StatusForbidden, "only comment author or admin can delete")
@@ -241,10 +240,8 @@ func (h *Handler) DeleteComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete comment")
 		return
 	}
-
-	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
 	slog.Info("comment deleted", append(logger.RequestAttrs(r), "comment_id", commentId, "issue_id", uuidToString(comment.IssueID))...)
-	h.publish(protocol.EventCommentDeleted, uuidToString(issue.WorkspaceID), actorType, actorID, map[string]any{
+	h.publish(protocol.EventCommentDeleted, workspaceID, actorType, actorID, map[string]any{
 		"comment_id": commentId,
 		"issue_id":   uuidToString(comment.IssueID),
 	})

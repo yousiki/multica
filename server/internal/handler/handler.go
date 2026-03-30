@@ -243,24 +243,25 @@ func (h *Handler) loadIssueForUser(w http.ResponseWriter, r *http.Request, issue
 		return db.Issue{}, false
 	}
 
+	workspaceID := resolveWorkspaceID(r)
+	if workspaceID == "" {
+		writeError(w, http.StatusBadRequest, "workspace_id is required")
+		return db.Issue{}, false
+	}
+
 	// Try identifier format first (e.g., "JIA-42").
-	if issue, ok := h.resolveIssueByIdentifier(r.Context(), issueID, resolveWorkspaceID(r)); ok {
-		if _, ok := h.requireWorkspaceMember(w, r, uuidToString(issue.WorkspaceID), "issue not found"); !ok {
-			return db.Issue{}, false
-		}
+	if issue, ok := h.resolveIssueByIdentifier(r.Context(), issueID, workspaceID); ok {
 		return issue, true
 	}
 
-	issue, err := h.Queries.GetIssue(r.Context(), parseUUID(issueID))
+	issue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+		ID:          parseUUID(issueID),
+		WorkspaceID: parseUUID(workspaceID),
+	})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "issue not found")
 		return db.Issue{}, false
 	}
-
-	if _, ok := h.requireWorkspaceMember(w, r, uuidToString(issue.WorkspaceID), "issue not found"); !ok {
-		return db.Issue{}, false
-	}
-
 	return issue, true
 }
 
@@ -332,16 +333,20 @@ func (h *Handler) loadAgentForUser(w http.ResponseWriter, r *http.Request, agent
 		return db.Agent{}, false
 	}
 
-	agent, err := h.Queries.GetAgent(r.Context(), parseUUID(agentID))
+	workspaceID := resolveWorkspaceID(r)
+	if workspaceID == "" {
+		writeError(w, http.StatusBadRequest, "workspace_id is required")
+		return db.Agent{}, false
+	}
+
+	agent, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+		ID:          parseUUID(agentID),
+		WorkspaceID: parseUUID(workspaceID),
+	})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "agent not found")
 		return db.Agent{}, false
 	}
-
-	if _, ok := h.requireWorkspaceMember(w, r, uuidToString(agent.WorkspaceID), "agent not found"); !ok {
-		return db.Agent{}, false
-	}
-
 	return agent, true
 }
 
@@ -351,7 +356,16 @@ func (h *Handler) loadInboxItemForUser(w http.ResponseWriter, r *http.Request, i
 		return db.InboxItem{}, false
 	}
 
-	item, err := h.Queries.GetInboxItem(r.Context(), parseUUID(itemID))
+	workspaceID := resolveWorkspaceID(r)
+	if workspaceID == "" {
+		writeError(w, http.StatusBadRequest, "workspace_id is required")
+		return db.InboxItem{}, false
+	}
+
+	item, err := h.Queries.GetInboxItemInWorkspace(r.Context(), db.GetInboxItemInWorkspaceParams{
+		ID:          parseUUID(itemID),
+		WorkspaceID: parseUUID(workspaceID),
+	})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "inbox item not found")
 		return db.InboxItem{}, false
@@ -361,6 +375,5 @@ func (h *Handler) loadInboxItemForUser(w http.ResponseWriter, r *http.Request, i
 		writeError(w, http.StatusNotFound, "inbox item not found")
 		return db.InboxItem{}, false
 	}
-
 	return item, true
 }

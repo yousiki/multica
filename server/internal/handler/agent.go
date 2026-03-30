@@ -93,6 +93,7 @@ type AgentTaskResponse struct {
 	AgentID        string         `json:"agent_id"`
 	RuntimeID      string         `json:"runtime_id"`
 	IssueID        string         `json:"issue_id"`
+	WorkspaceID    string         `json:"workspace_id"`
 	Status         string         `json:"status"`
 	Priority       int32          `json:"priority"`
 	DispatchedAt   *string        `json:"dispatched_at"`
@@ -303,7 +304,8 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := agentToResponse(agent)
-	h.publish(protocol.EventAgentCreated, workspaceID, "member", ownerID, map[string]any{"agent": resp})
+	actorType, actorID := h.resolveActor(r, ownerID, workspaceID)
+	h.publish(protocol.EventAgentCreated, workspaceID, actorType, actorID, map[string]any{"agent": resp})
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -398,7 +400,8 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	resp := agentToResponse(agent)
 	slog.Info("agent updated", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", uuidToString(agent.WorkspaceID))...)
 	userID := requestUserID(r)
-	h.publish(protocol.EventAgentStatus, uuidToString(agent.WorkspaceID), "member", userID, map[string]any{"agent": resp})
+	actorType, actorID := h.resolveActor(r, userID, uuidToString(agent.WorkspaceID))
+	h.publish(protocol.EventAgentStatus, uuidToString(agent.WorkspaceID), actorType, actorID, map[string]any{"agent": resp})
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -424,7 +427,8 @@ func (h *Handler) DeleteAgent(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("agent deleted", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", wsID)...)
 	userID := requestUserID(r)
-	h.publish(protocol.EventAgentDeleted, wsID, "member", userID, map[string]any{"agent_id": id, "workspace_id": wsID})
+	actorType, actorID := h.resolveActor(r, userID, wsID)
+	h.publish(protocol.EventAgentDeleted, wsID, actorType, actorID, map[string]any{"agent_id": id, "workspace_id": wsID})
 	w.WriteHeader(http.StatusNoContent)
 }
 

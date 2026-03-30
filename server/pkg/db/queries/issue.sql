@@ -11,6 +11,10 @@ LIMIT $2 OFFSET $3;
 SELECT * FROM issue
 WHERE id = $1;
 
+-- name: GetIssueInWorkspace :one
+SELECT * FROM issue
+WHERE id = $1 AND workspace_id = $2;
+
 -- name: CreateIssue :one
 INSERT INTO issue (
     workspace_id, title, description, status, priority,

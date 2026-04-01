@@ -2,15 +2,18 @@
 
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useImperativeHandle,
+  useRef,
   useState,
 } from "react";
-import { Bot, Hash } from "lucide-react";
+import { Hash } from "lucide-react";
 import { ReactRenderer } from "@tiptap/react";
 import { computePosition, offset, flip, shift } from "@floating-ui/dom";
 import { useWorkspaceStore } from "@/features/workspace";
 import { useIssueStore } from "@/features/issues";
+import { ActorAvatar } from "@/components/common/actor-avatar";
 import type { SuggestionOptions, SuggestionProps } from "@tiptap/suggestion";
 
 // ---------------------------------------------------------------------------
@@ -41,15 +44,23 @@ export interface MentionListRef {
 const MentionList = forwardRef<MentionListRef, MentionListProps>(
   function MentionList({ items, command }, ref) {
     const [selectedIndex, setSelectedIndex] = useState(0);
+    const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
     useEffect(() => {
       setSelectedIndex(0);
     }, [items]);
 
-    const selectItem = (index: number) => {
-      const item = items[index];
-      if (item) command(item);
-    };
+    useEffect(() => {
+      itemRefs.current[selectedIndex]?.scrollIntoView({ block: "nearest" });
+    }, [selectedIndex]);
+
+    const selectItem = useCallback(
+      (index: number) => {
+        const item = items[index];
+        if (item) command(item);
+      },
+      [items, command],
+    );
 
     useImperativeHandle(ref, () => ({
       onKeyDown: ({ event }) => {
@@ -81,29 +92,23 @@ const MentionList = forwardRef<MentionListRef, MentionListProps>(
       <div className="rounded-md border bg-popover py-1 shadow-md min-w-[180px] max-h-[240px] overflow-y-auto">
         {items.map((item, index) => (
           <button
+            ref={(el) => { itemRefs.current[index] = el; }}
             key={`${item.type}-${item.id}`}
             className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm transition-colors ${
               index === selectedIndex ? "bg-accent" : "hover:bg-accent/50"
             }`}
             onClick={() => selectItem(index)}
           >
-            {item.type === "agent" ? (
-              <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-info/10 text-info">
-                <Bot className="h-3 w-3" />
-              </span>
-            ) : item.type === "issue" ? (
+            {item.type === "issue" ? (
               <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
                 <Hash className="h-3 w-3" />
               </span>
             ) : (
-              <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground text-[9px] font-medium">
-                {item.label
-                  .split(" ")
-                  .map((w) => w[0])
-                  .join("")
-                  .toUpperCase()
-                  .slice(0, 2)}
-              </span>
+              <ActorAvatar
+                actorType={item.type}
+                actorId={item.id}
+                size={20}
+              />
             )}
             <div className="flex flex-col min-w-0">
               <span className="truncate">{item.label}</span>

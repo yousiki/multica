@@ -919,7 +919,13 @@ function TriggersTab({
       </div>
 
       <div className="space-y-2">
-        {triggers.map((trigger) => (
+        {triggers.map((trigger) => {
+          const scheduledConfig = (trigger.config ?? {}) as {
+            cron?: string;
+            timezone?: string;
+          };
+
+          return (
           <div
             key={trigger.id}
             className="rounded-lg border px-4 py-3"
@@ -947,7 +953,7 @@ function TriggersTab({
                     ? "Runs when an issue is assigned to this agent"
                     : trigger.type === "on_comment"
                       ? "Runs when a member comments on the agent's issue"
-                      : `Cron: ${(trigger.config as { cron?: string }).cron ?? "Not set"}`}
+                      : `Cron: ${scheduledConfig.cron ?? "Not set"}`}
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -982,10 +988,10 @@ function TriggersTab({
                   </Label>
                   <Input
                     type="text"
-                    value={(trigger.config as { cron?: string }).cron ?? ""}
+                    value={scheduledConfig.cron ?? ""}
                     onChange={(e) =>
                       updateTriggerConfig(trigger.id, {
-                        ...trigger.config,
+                        ...scheduledConfig,
                         cron: e.target.value,
                       })
                     }
@@ -999,10 +1005,10 @@ function TriggersTab({
                   </Label>
                   <Input
                     type="text"
-                    value={(trigger.config as { timezone?: string }).timezone ?? ""}
+                    value={scheduledConfig.timezone ?? ""}
                     onChange={(e) =>
                       updateTriggerConfig(trigger.id, {
-                        ...trigger.config,
+                        ...scheduledConfig,
                         timezone: e.target.value,
                       })
                     }
@@ -1013,7 +1019,8 @@ function TriggersTab({
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="flex gap-2">

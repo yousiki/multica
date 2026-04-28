@@ -58,49 +58,30 @@ func (s *popRecordingLocalSkillImportStore) PopPending(ctx context.Context, runt
 }
 
 // setHandlerTestWorkspaceRepos rewrites the workspace's repo bindings to
-// exactly the supplied list. The on-disk shape changed from a JSONB column to
-// the polymorphic `repo` + `repo_binding` tables in migration 060, so this
-// helper mirrors the production setRepoBindingsForScope path: clear existing
-// workspace-scoped bindings, upsert each (url, description), then bind it.
-// Cleanup drops everything back to a clean slate so subsequent tests see no
-// repos.
+// exactly the supplied list by routing the test through the same
+// setRepoBindingsForScope path the production PATCH /workspaces/:id handler
+// uses. Going through the helper instead of duplicating raw SQL means the
+// test is automatically correct against future schema changes (description
+// already moved between tables once between PR commits) and exercises the
+// same orphan-GC behavior end-to-end.
 func setHandlerTestWorkspaceRepos(t *testing.T, repos []map[string]string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := testPool.Exec(ctx, `DELETE FROM repo_binding WHERE scope_type = 'workspace' AND scope_id = $1`, testWorkspaceID); err != nil {
-		t.Fatalf("clear workspace repo bindings: %v", err)
-	}
+	wsUUID := parseUUID(testWorkspaceID)
+
+	repoData := make([]RepoData, 0, len(repos))
 	for _, r := range repos {
-		url := strings.TrimSpace(r["url"])
-		if url == "" {
-			continue
-		}
-		description := strings.TrimSpace(r["description"])
-		var repoID string
-		if err := testPool.QueryRow(ctx, `
-			INSERT INTO repo (url, description) VALUES ($1, $2)
-			ON CONFLICT (url) DO UPDATE SET description = EXCLUDED.description, updated_at = now()
-			RETURNING id
-		`, url, description).Scan(&repoID); err != nil {
-			t.Fatalf("upsert repo %q: %v", url, err)
-		}
-		if _, err := testPool.Exec(ctx, `
-			INSERT INTO repo_binding (repo_id, scope_type, scope_id) VALUES ($1, 'workspace', $2)
-			ON CONFLICT (repo_id, scope_type, scope_id) DO NOTHING
-		`, repoID, testWorkspaceID); err != nil {
-			t.Fatalf("bind repo %q: %v", url, err)
-		}
+		repoData = append(repoData, RepoData{
+			URL:         r["url"],
+			Description: r["description"],
+		})
+	}
+	if err := testHandler.setRepoBindingsForScope(ctx, repoScopeWorkspace, wsUUID, repoData); err != nil {
+		t.Fatalf("set workspace repo bindings: %v", err)
 	}
 	t.Cleanup(func() {
-		if _, err := testPool.Exec(ctx, `DELETE FROM repo_binding WHERE scope_type = 'workspace' AND scope_id = $1`, testWorkspaceID); err != nil {
+		if err := testHandler.setRepoBindingsForScope(ctx, repoScopeWorkspace, wsUUID, nil); err != nil {
 			t.Fatalf("reset workspace repo bindings: %v", err)
-		}
-		if _, err := testPool.Exec(ctx, `
-			DELETE FROM repo WHERE NOT EXISTS (
-				SELECT 1 FROM repo_binding rb WHERE rb.repo_id = repo.id
-			)
-		`); err != nil {
-			t.Fatalf("reset orphan repos: %v", err)
 		}
 	})
 }

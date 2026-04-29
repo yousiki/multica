@@ -1035,6 +1035,38 @@ export class ApiClient {
     await this.fetch(`/api/projects/${id}`, { method: "DELETE" });
   }
 
+  // Project repos (Step 2 of MUL-14: project-scope repo binding).
+  async listProjectRepos(projectId: string): Promise<{ repos: WorkspaceRepo[] }> {
+    return this.fetch(`/api/projects/${projectId}/repos`);
+  }
+
+  async addProjectRepo(
+    projectId: string,
+    data: { url: string; description?: string },
+  ): Promise<{ repo: WorkspaceRepo; repos: WorkspaceRepo[] }> {
+    return this.fetch(`/api/projects/${projectId}/repos`, {
+      method: "POST",
+      body: JSON.stringify({ url: data.url, description: data.description ?? "" }),
+    });
+  }
+
+  // The DELETE side picks the right encoding based on the input shape: a git
+  // URL goes on `?url=` because chi's path segments collide with the URL's
+  // own `/`, while a UUID goes on the path. Callers don't need to care.
+  async removeProjectRepo(projectId: string, urlOrRepoId: string): Promise<void> {
+    const trimmed = urlOrRepoId.trim();
+    const isUUID =
+      trimmed.length === 36 &&
+      trimmed[8] === "-" &&
+      trimmed[13] === "-" &&
+      trimmed[18] === "-" &&
+      trimmed[23] === "-";
+    const path = isUUID
+      ? `/api/projects/${projectId}/repos/${encodeURIComponent(trimmed)}`
+      : `/api/projects/${projectId}/repos?url=${encodeURIComponent(trimmed)}`;
+    await this.fetch(path, { method: "DELETE" });
+  }
+
   // Labels
   async listLabels(): Promise<ListLabelsResponse> {
     return this.fetch(`/api/labels`);

@@ -25,6 +25,7 @@ import { ViewStoreProvider, useViewStore } from "@multica/core/issues/stores/vie
 import { filterIssues } from "../../issues/utils/filter";
 import { getProjectIssueMetrics } from "./project-issue-metrics";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { ProjectReposSection } from "./project-repos-section";
 import { AppLink, useNavigation } from "../../navigation";
 import { TitleEditor, ContentEditor, type ContentEditorRef } from "../../editor";
 import { PriorityIcon } from "../../issues/components/priority-icon";
@@ -215,6 +216,11 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const isPinned = pinnedItems.some((p) => p.item_type === "project" && p.item_id === projectId);
   const createPin = useCreatePin();
   const deletePinMut = useDeletePin();
+  // Repo binding edits gated to admins/owners — same gate as workspace
+  // settings, since project-scope repos are workspace-affecting metadata.
+  const currentMember = members.find((m) => m.user_id === userId) ?? null;
+  const canManageProjectRepos =
+    currentMember?.role === "owner" || currentMember?.role === "admin";
   const descEditorRef = useRef<ContentEditorRef>(null);
   const isMobile = useIsMobile();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -494,6 +500,9 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
           />
         </div>}
       </div>
+
+      {/* Repositories — project-scope bindings (Step 2 of MUL-14). */}
+      <ProjectReposSection projectId={projectId} canEdit={canManageProjectRepos} />
     </div>
   );
 

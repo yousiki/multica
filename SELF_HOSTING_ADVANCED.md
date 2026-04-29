@@ -334,9 +334,16 @@ trusted network, for example a host-local mapping such as
 ## Upgrading
 
 ```bash
+git pull            # pull the latest fork changes (compose file + docs)
 docker compose -f docker-compose.selfhost.yml pull
 docker compose -f docker-compose.selfhost.yml up -d
 ```
 
-Pin `MULTICA_IMAGE_TAG` in `.env` to an exact release like `v0.2.4` if you want to stay on a specific version. Migrations run automatically on backend startup. They are idempotent — running them multiple times has no effect.
+Pin `MULTICA_IMAGE_TAG` in `.env` to:
+
+- `latest` (default) — the most recent stable `vX.Y.Z` release published by this fork to `ghcr.io/yousiki/multica-{backend,web}`.
+- An exact release like `v0.2.4` to stay on a specific version.
+- `edge` (or `main`) to track the latest `main` branch of `yousiki/multica`. The edge workflow rebuilds + pushes on every commit to `main`.
+
+Migrations run automatically on backend startup. They are idempotent — running them multiple times has no effect.
 If the selected GHCR tag has not been published yet, fall back to `docker compose -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml up -d --build`.

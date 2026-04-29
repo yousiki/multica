@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
@@ -891,6 +892,22 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Quick-create task: no issue / chat / autopilot link — workspace and
+	// prompt come from the task's context JSONB. Resolve workspace from
+	// there so the isolation check below has something to compare.
+	hasQuickCreate := false
+	if task.Context != nil && !task.IssueID.Valid && !task.ChatSessionID.Valid && !task.AutopilotRunID.Valid {
+		var qc service.QuickCreateContext
+		if json.Unmarshal(task.Context, &qc) == nil && qc.Type == service.QuickCreateContextType {
+			hasQuickCreate = true
+			resp.QuickCreatePrompt = qc.Prompt
+			resp.WorkspaceID = qc.WorkspaceID
+			if repos, err := h.loadWorkspaceRepoData(r.Context(), parseUUID(qc.WorkspaceID)); err == nil && len(repos) > 0 {
+				resp.Repos = repos
+			}
+		}
+	}
+
 	// Workspace isolation check: the daemon uses this response's workspace_id
 	// as the only authority for MULTICA_WORKSPACE_ID in the agent env. An
 	// empty value would make the CLI silently fall back to the user-global
@@ -909,6 +926,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 			"has_issue", task.IssueID.Valid,
 			"has_chat", task.ChatSessionID.Valid,
 			"has_autopilot_run", task.AutopilotRunID.Valid,
+			"has_quick_create", hasQuickCreate,
 		)
 		if _, cerr := h.TaskService.CancelTask(r.Context(), task.ID); cerr != nil {
 			slog.Error("task claim: cancel after workspace check failed",

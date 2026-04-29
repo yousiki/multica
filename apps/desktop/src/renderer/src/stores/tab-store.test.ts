@@ -241,6 +241,24 @@ describe("useTabStore actions", () => {
     expect(s.byWorkspace.butter).toBe(beforeButter);
   });
 
+  it("switchWorkspace rejects an openPath that has no leading workspace slug", () => {
+    // `/issues`, `/login`, `/workspaces/new`, `/` etc. all return null from
+    // extractWorkspaceSlug. They can never satisfy the slug equality the
+    // docstring promises, so they're a no-op + warn, not a silent fallback.
+    const store = useTabStore.getState();
+    store.switchWorkspace("acme");
+    store.switchWorkspace("butter");
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const bad of ["/issues", "/workspaces/new", "/login", "/"]) {
+      store.switchWorkspace("acme", bad);
+    }
+    expect(warn).toHaveBeenCalledTimes(4);
+    warn.mockRestore();
+
+    expect(useTabStore.getState().activeWorkspaceSlug).toBe("butter");
+  });
+
   it("switchWorkspace permits openPath when its slug matches the slug arg", () => {
     const store = useTabStore.getState();
     store.switchWorkspace("acme");

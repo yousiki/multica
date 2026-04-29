@@ -52,10 +52,11 @@ interface TabStore {
    * Switch to a workspace without specifying a target path — used by the
    * sidebar workspace switcher and similar "go to X" affordances.
    *   - If the group doesn't exist yet, create it with a single default tab.
-   *   - If `openPath` is given, it MUST belong to `slug`
-   *     (`extractWorkspaceSlug(openPath) === slug`); a mismatch is rejected
-   *     with a console.warn and no state change. To open a tab whose path
-   *     determines the target workspace, call `openTab(path, ...)` instead.
+   *   - If `openPath` is given, `extractWorkspaceSlug(openPath)` MUST equal
+   *     `slug`; any other value (including paths whose first segment is
+   *     reserved or empty, where `extractWorkspaceSlug` returns null) is
+   *     rejected with a console.warn and no state change. To open a tab
+   *     whose path determines the target workspace, call `openTab(path, ...)`.
    *   - If `openPath` matches an existing tab in the group, activate it;
    *     otherwise add a new tab and activate it.
    *   - If `openPath` is omitted, restore the group's last active tab
@@ -245,18 +246,19 @@ export const useTabStore = create<TabStore>()(
         // these, but belt-and-braces keeps garbage out of the store.
         if (!slug) return;
 
-        // Invariant: if openPath is provided, its leading slug must match
-        // `slug`. Mixing them is the bug class this whole refactor is
-        // designed to prevent — refusing here is louder than silently
-        // routing to the path's slug, because the caller is wrong about
-        // *intent*, not just about path-vs-slug arithmetic.
+        // Invariant: if openPath is provided, `extractWorkspaceSlug(openPath)`
+        // must equal `slug`. Mixing them is the bug class this whole refactor
+        // is designed to prevent. A null pathSlug (root, reserved-prefix, or
+        // global path like `/issues`) is also rejected — it can never satisfy
+        // the slug equality, and silently substituting the workspace's default
+        // tab would hide the caller's intent bug.
         if (openPath) {
           const pathSlug = extractWorkspaceSlug(openPath);
-          if (pathSlug !== null && pathSlug !== slug) {
+          if (pathSlug !== slug) {
             console.warn(
               `[tab-store] switchWorkspace("${slug}", "${openPath}") rejected — ` +
-                `path belongs to workspace "${pathSlug}". Use openTab(path) for ` +
-                `path-driven routing.`,
+                `path's workspace is ${pathSlug === null ? "<none>" : `"${pathSlug}"`}. ` +
+                `Use openTab(path) for path-driven routing.`,
             );
             return;
           }

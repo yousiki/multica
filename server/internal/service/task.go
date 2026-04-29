@@ -8,6 +8,7 @@ import (
 	"log/slog"
 
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -31,6 +32,56 @@ type TaskService struct {
 
 type TaskWakeupNotifier interface {
 	NotifyTaskAvailable(runtimeID, taskID string)
+}
+
+// triggerSummaryMaxLen caps the snapshot length so the row stays cheap to
+// transmit (it ends up in every task list response). 200 is enough for a
+// recognisable preview of a one-paragraph comment.
+const triggerSummaryMaxLen = 200
+
+// truncateForSummary returns s shortened to maxRunes, with a trailing
+// `…` when truncated. Operates on runes (not bytes) so multibyte characters
+// — Chinese / emoji — count as one each. Strips surrounding whitespace
+// first so a leading newline doesn't waste budget.
+func truncateForSummary(s string, maxRunes int) string {
+	// strings.Builder + Grow avoids the O(N²) realloc cycle of `+=` in
+	// a loop. Grow uses byte length, which is an upper bound for the
+	// rune-equivalent output (replacing \n/\r/\t with space is byte-equal
+	// for ASCII whitespace), so we never reallocate.
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\n', '\r', '\t':
+			b.WriteByte(' ')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	rs := []rune(strings.TrimSpace(b.String()))
+	if len(rs) <= maxRunes {
+		return string(rs)
+	}
+	return string(rs[:maxRunes]) + "…"
+}
+
+// buildCommentTriggerSummary fetches the comment content and truncates
+// it for storage on the task row. Returns an invalid pgtype.Text when
+// the comment is missing (deleted / wrong workspace / etc) so the column
+// stays NULL — front-end falls back to a structural label in that case.
+func (s *TaskService) buildCommentTriggerSummary(ctx context.Context, commentID pgtype.UUID) pgtype.Text {
+	if !commentID.Valid {
+		return pgtype.Text{}
+	}
+	comment, err := s.Queries.GetComment(ctx, commentID)
+	if err != nil {
+		return pgtype.Text{}
+	}
+	summary := truncateForSummary(comment.Content, triggerSummaryMaxLen)
+	if summary == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: summary, Valid: true}
 }
 
 func NewTaskService(q *db.Queries, tx TxStarter, hub *realtime.Hub, bus *events.Bus, wakeups ...TaskWakeupNotifier) *TaskService {
@@ -75,6 +126,7 @@ func (s *TaskService) EnqueueTaskForIssue(ctx context.Context, issue db.Issue, t
 		IssueID:          issue.ID,
 		Priority:         priorityToInt(issue.Priority),
 		TriggerCommentID: commentID,
+		TriggerSummary:   s.buildCommentTriggerSummary(ctx, commentID),
 	})
 	if err != nil {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", err)
@@ -82,6 +134,13 @@ func (s *TaskService) EnqueueTaskForIssue(ctx context.Context, issue db.Issue, t
 	}
 
 	slog.Info("task enqueued", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(issue.AssigneeID))
+	// Order matters: broadcast first, notify daemon second. notifyTaskAvailable
+	// kicks an in-process channel that the daemon picks up over HTTP and
+	// claims; the claim path then emits its own task:dispatch. Doing the
+	// queued broadcast afterwards risks the dispatch event reaching clients
+	// before the queued one (rare but unsafe-by-construction). Publishing
+	// in the desired observe-order makes correctness independent of timing.
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.notifyTaskAvailable(task)
 	return task, nil
 }
@@ -110,6 +169,7 @@ func (s *TaskService) EnqueueTaskForMention(ctx context.Context, issue db.Issue,
 		IssueID:          issue.ID,
 		Priority:         priorityToInt(issue.Priority),
 		TriggerCommentID: triggerCommentID,
+		TriggerSummary:   s.buildCommentTriggerSummary(ctx, triggerCommentID),
 	})
 	if err != nil {
 		slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
@@ -117,6 +177,8 @@ func (s *TaskService) EnqueueTaskForMention(ctx context.Context, issue db.Issue,
 	}
 
 	slog.Info("mention task enqueued", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
+	// See EnqueueTaskForIssue for ordering rationale.
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.notifyTaskAvailable(task)
 	return task, nil
 }
@@ -180,6 +242,12 @@ func (s *TaskService) EnqueueQuickCreateTask(ctx context.Context, workspaceID, r
 		"requester_id", util.UUIDToString(requesterID),
 		"workspace_id", util.UUIDToString(workspaceID),
 	)
+	// Match every other Enqueue* path: kick the daemon WS so the task
+	// gets claimed promptly instead of waiting for the next 30 s poll
+	// cycle. Without this the user perceives "quick create never
+	// triggered" because the modal closes immediately and the task
+	// sits in 'queued' until the next sleepWithContextOrWakeup tick.
+	s.notifyTaskAvailable(task)
 	return task, nil
 }
 
@@ -210,6 +278,8 @@ func (s *TaskService) EnqueueChatTask(ctx context.Context, chatSession db.ChatSe
 	}
 
 	slog.Info("chat task enqueued", "task_id", util.UUIDToString(task.ID), "chat_session_id", util.UUIDToString(chatSession.ID), "agent_id", util.UUIDToString(chatSession.AgentID))
+	// See EnqueueTaskForIssue for ordering rationale.
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.notifyTaskAvailable(task)
 	return task, nil
 }
@@ -551,7 +621,12 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 			var payload protocol.TaskCompletedPayload
 			if err := json.Unmarshal(result, &payload); err == nil {
 				if payload.Output != "" {
-					s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(payload.Output), "comment", task.TriggerCommentID)
+					// Match the CLI's --content / --description behavior: agents that
+					// emit literal `\n` 4-char sequences (Python/JSON-style) get them
+					// decoded into real newlines before the comment hits the DB. See
+					// util.UnescapeBackslashEscapes for the exact contract.
+					body := util.UnescapeBackslashEscapes(payload.Output)
+					s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(body), "comment", task.TriggerCommentID)
 				}
 			}
 		}
@@ -572,11 +647,16 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	if task.ChatSessionID.Valid {
 		var payload protocol.TaskCompletedPayload
 		if err := json.Unmarshal(result, &payload); err == nil && payload.Output != "" {
+			// Same unescape as the issue-comment path above: literal `\n` from
+			// agent stdout becomes a real newline so the chat panel renders
+			// paragraph breaks instead of one wall of prose.
+			body := util.UnescapeBackslashEscapes(payload.Output)
 			if _, err := s.Queries.CreateChatMessage(ctx, db.CreateChatMessageParams{
 				ChatSessionID: task.ChatSessionID,
 				Role:          "assistant",
-				Content:       redact.Text(payload.Output),
+				Content:       redact.Text(body),
 				TaskID:        task.ID,
+				ElapsedMs:     computeChatElapsedMs(task),
 			}); err != nil {
 				slog.Error("failed to save assistant chat message", "task_id", util.UUIDToString(task.ID), "error", err)
 			} else {
@@ -679,6 +759,31 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 		s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(errMsg), "system", task.TriggerCommentID)
 	}
 
+	// Mirror the issue fallback for chat tasks: write an assistant
+	// chat_message tagged with the daemon-reported failure_reason so the
+	// conversation history shows what happened. Skip when auto-retry is
+	// pending (the new attempt will write its own outcome) — same guard as
+	// the issue path above.
+	if task.ChatSessionID.Valid && retried == nil {
+		if _, err := s.Queries.CreateChatMessage(ctx, db.CreateChatMessageParams{
+			ChatSessionID: task.ChatSessionID,
+			Role:          "assistant",
+			Content:       redact.Text(errMsg),
+			TaskID:        pgtype.UUID{Bytes: task.ID.Bytes, Valid: true},
+			FailureReason: pgtype.Text{String: failureReason, Valid: failureReason != ""},
+			ElapsedMs:     computeChatElapsedMs(task),
+		}); err != nil {
+			slog.Error("failed to save failure chat message",
+				"task_id", util.UUIDToString(task.ID),
+				"chat_session_id", util.UUIDToString(task.ChatSessionID),
+				"error", err)
+		} else if err := s.Queries.SetUnreadSinceIfNull(ctx, task.ChatSessionID); err != nil {
+			slog.Warn("failed to set unread_since on failure",
+				"chat_session_id", util.UUIDToString(task.ChatSessionID),
+				"error", err)
+		}
+	}
+
 	// Quick-create tasks: push a failure inbox notification to the
 	// requester so they can either retry or fall back to the advanced form
 	// without losing their original prompt. Skipped when an auto-retry is
@@ -760,8 +865,11 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		"attempt", child.Attempt,
 		"max_attempts", child.MaxAttempts,
 	)
+	// Retry creates a fresh queued row, same status transition (∅ → queued)
+	// as EnqueueTaskFor*. Broadcast queued first, then notify the daemon —
+	// see EnqueueTaskForIssue for ordering rationale.
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, child)
 	s.notifyTaskAvailable(child)
-	s.broadcastTaskEvent(ctx, protocol.EventTaskDispatch, child)
 	return &child, nil
 }
 
@@ -1003,6 +1111,23 @@ type AgentSkillFileData struct {
 	Content string `json:"content"`
 }
 
+// computeChatElapsedMs returns the wall-clock duration from task creation
+// (user hit send) to terminal state (completed/failed). Stored on the
+// assistant chat_message so the UI can render "Replied in 38s" /
+// "Failed after 12s". Uses created_at — not started_at — because users
+// experience total wait time, including queue + dispatch, not just the
+// daemon's actual run time.
+func computeChatElapsedMs(task db.AgentTaskQueue) pgtype.Int8 {
+	if !task.CompletedAt.Valid || !task.CreatedAt.Valid {
+		return pgtype.Int8{}
+	}
+	ms := task.CompletedAt.Time.Sub(task.CreatedAt.Time).Milliseconds()
+	if ms < 0 {
+		ms = 0
+	}
+	return pgtype.Int8{Int64: ms, Valid: true}
+}
+
 func priorityToInt(p string) int32 {
 	switch p {
 	case "urgent":
@@ -1037,6 +1162,12 @@ func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTa
 	payload["runtime_id"] = util.UUIDToString(task.RuntimeID)
 	payload["issue_id"] = util.UUIDToString(task.IssueID)
 	payload["agent_id"] = util.UUIDToString(task.AgentID)
+	// chat_session_id is the routing key the chat window uses to writethrough
+	// `chatKeys.pendingTask` to status="running" the moment the daemon claims
+	// the task. Without it the pill stays stuck at "Queued" until completion.
+	if task.ChatSessionID.Valid {
+		payload["chat_session_id"] = util.UUIDToString(task.ChatSessionID)
+	}
 
 	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
 	if workspaceID == "" {
@@ -1095,6 +1226,14 @@ func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentT
 				return util.UUIDToString(ap.WorkspaceID)
 			}
 		}
+	}
+	// Quick-create tasks have no issue / chat / autopilot link — workspace
+	// lives in the context JSONB. Returning "" here is what blocked
+	// requireDaemonTaskAccess (404 on /start, /progress, /complete, /fail
+	// for the daemon) and silently dropped task:dispatch / task:completed
+	// broadcasts, which is why quick-create tasks appeared stuck queued.
+	if qc, ok := s.parseQuickCreateContext(task); ok {
+		return qc.WorkspaceID
 	}
 	return ""
 }
@@ -1266,13 +1405,30 @@ func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.Ag
 		s.notifyQuickCreateFailed(ctx, task, qc, "agent finished without creating an issue")
 		return
 	}
+
+	// Link the new issue back to this task so subsequent reads of the task
+	// (Activity tab, Recent work, etc.) render it as a normal issue task
+	// (kind = "direct") instead of staying on the "Creating issue" active-
+	// wording label. Best-effort: a write failure here doesn't block the
+	// inbox notification, which is the more important signal to the user.
+	if err := s.Queries.LinkTaskToIssue(ctx, db.LinkTaskToIssueParams{
+		ID:      task.ID,
+		IssueID: issue.ID,
+	}); err != nil {
+		slog.Warn("quick-create completion: link task→issue failed",
+			"task_id", util.UUIDToString(task.ID),
+			"issue_id", util.UUIDToString(issue.ID),
+			"error", err,
+		)
+	}
 	prefix := s.getIssuePrefix(workspaceID)
 	identifier := fmt.Sprintf("%s-%d", prefix, issue.Number)
 	details, _ := json.Marshal(map[string]any{
-		"task_id":    util.UUIDToString(task.ID),
-		"agent_id":   util.UUIDToString(task.AgentID),
-		"issue_id":   util.UUIDToString(issue.ID),
-		"identifier": identifier,
+		"task_id":         util.UUIDToString(task.ID),
+		"agent_id":        util.UUIDToString(task.AgentID),
+		"issue_id":        util.UUIDToString(issue.ID),
+		"identifier":      identifier,
+		"original_prompt": qc.Prompt,
 	})
 	item, err := s.Queries.CreateInboxItem(ctx, db.CreateInboxItemParams{
 		WorkspaceID:   workspaceID,
@@ -1281,7 +1437,7 @@ func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.Ag
 		Type:          "quick_create_done",
 		Severity:      "info",
 		IssueID:       issue.ID,
-		Title:         fmt.Sprintf("Created %s: %s", identifier, issue.Title),
+		Title:         issue.Title,
 		Body:          pgtype.Text{},
 		ActorType:     pgtype.Text{String: "agent", Valid: true},
 		ActorID:       task.AgentID,

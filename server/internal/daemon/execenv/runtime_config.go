@@ -72,6 +72,9 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 	b.WriteString("- `multica issue get <id> --output json` — Get full issue details (title, description, status, priority, assignee)\n")
 	b.WriteString("- `multica issue list [--status X] [--priority X] [--assignee X] [--limit N] [--offset N] --output json` — List issues in workspace (default limit: 50; JSON output includes `total`, `has_more` — use offset to paginate when `has_more` is true)\n")
 	b.WriteString("- `multica issue comment list <issue-id> [--limit N] [--offset N] [--since <RFC3339>] --output json` — List comments on an issue (supports pagination; includes id, parent_id for threading)\n")
+	b.WriteString("- `multica issue label list <issue-id> --output json` — List labels currently attached to an issue\n")
+	b.WriteString("- `multica issue subscriber list <issue-id> --output json` — List members/agents subscribed to an issue\n")
+	b.WriteString("- `multica label list --output json` — List all labels defined in the workspace (returns id + name + color)\n")
 	b.WriteString("- `multica workspace get --output json` — Get workspace details and context\n")
 	b.WriteString("- `multica workspace members [workspace-id] --output json` — List workspace members (user IDs, names, roles)\n")
 	b.WriteString("- `multica agent list --output json` — List agents in workspace\n")
@@ -84,10 +87,16 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 	b.WriteString("- `multica autopilot runs <id> [--limit N] --output json` — List execution history for an autopilot\n\n")
 
 	b.WriteString("### Write\n")
-	b.WriteString("- `multica issue create --title \"...\" [--description \"...\"] [--priority X] [--assignee X] [--parent <issue-id>] [--status X]` — Create a new issue\n")
-	b.WriteString("- `multica issue assign <id> --to <name>` — Assign an issue to a member or agent by name (use --unassign to remove assignee)\n")
-	b.WriteString("- `multica issue comment add <issue-id> --content \"...\" [--parent <comment-id>]` — Post a comment (use --parent to reply to a specific comment)\n")
-	b.WriteString("  - **For multi-line content (anything with line breaks, paragraphs, code blocks, backticks, or quotes), you MUST pipe via stdin** — bash does NOT expand `\\n` inside double quotes, so writing `--content \"para1\\n\\npara2\"` stores the literal 4-char sequence and the comment renders without line breaks. Use a HEREDOC instead:\n")
+	b.WriteString("- `multica issue create --title \"...\" [--description \"...\"] [--priority X] [--status X] [--assignee X] [--parent <issue-id>] [--project <project-id>] [--due-date <RFC3339>] [--attachment <path>]` — Create a new issue. `--attachment` may be repeated to upload multiple files; labels and subscribers are not accepted here, attach them after create with the commands below.\n")
+	b.WriteString("- `multica issue update <id> [--title X] [--description X] [--priority X] [--status X] [--assignee X] [--parent <issue-id>] [--project <project-id>] [--due-date <RFC3339>]` — Update one or more issue fields in a single call. Use `--parent \"\"` to clear the parent.\n")
+	b.WriteString("- `multica issue status <id> <status>` — Shortcut for `issue update --status` when you only need to flip status (todo, in_progress, in_review, done, blocked, backlog, cancelled)\n")
+	b.WriteString("- `multica issue assign <id> --to <name>` — Assign an issue to a member or agent by name (use `--unassign` to remove assignee)\n")
+	b.WriteString("- `multica issue label add <issue-id> <label-id>` — Attach a label to an issue (look up the label id via `multica label list`)\n")
+	b.WriteString("- `multica issue label remove <issue-id> <label-id>` — Detach a label from an issue\n")
+	b.WriteString("- `multica issue subscriber add <issue-id> [--user <name>]` — Subscribe a member or agent to issue updates (defaults to the caller when `--user` is omitted)\n")
+	b.WriteString("- `multica issue subscriber remove <issue-id> [--user <name>]` — Unsubscribe a member or agent\n")
+	b.WriteString("- `multica issue comment add <issue-id> --content-stdin [--parent <comment-id>] [--attachment <path>]` — Post a comment. Agent-authored comments should always pipe content via stdin, even for short single-line replies. Use `--parent` to reply to a specific comment; `--attachment` may be repeated.\n")
+	b.WriteString("  - **For comment content, you MUST pipe via stdin; this is mandatory for multi-line content (anything with line breaks, paragraphs, code blocks, backticks, or quotes).** Do not use inline `--content` and do not write `\\n` escapes. Use a HEREDOC instead:\n")
 	b.WriteString("\n")
 	b.WriteString("    ```\n")
 	b.WriteString("    cat <<'COMMENT' | multica issue comment add <issue-id> --content-stdin\n")
@@ -99,8 +108,7 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 	b.WriteString("\n")
 	b.WriteString("  - The same rule applies to `--description` on `multica issue create` and `multica issue update` — use `--description-stdin` and pipe a HEREDOC for any multi-line description; the inline `--description \"...\"` form is for short single-line text only.\n")
 	b.WriteString("- `multica issue comment delete <comment-id>` — Delete a comment\n")
-	b.WriteString("- `multica issue status <id> <status>` — Update issue status (todo, in_progress, in_review, done, blocked)\n")
-	b.WriteString("- `multica issue update <id> [--title X] [--description X] [--priority X]` — Update issue fields\n")
+	b.WriteString("- `multica label create --name \"...\" --color \"#hex\"` — Define a new workspace label (use this only when the label you need does not exist yet; reuse existing labels via `multica label list` first)\n")
 	b.WriteString("- `multica autopilot create --title \"...\" --agent <name> --mode create_issue [--description \"...\"]` — Create an autopilot\n")
 	b.WriteString("- `multica autopilot update <id> [--title X] [--description X] [--status active|paused]` — Update an autopilot\n")
 	b.WriteString("- `multica autopilot trigger <id>` — Manually trigger an autopilot to run once\n")
@@ -108,9 +116,9 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 
 	if provider == "codex" {
 		b.WriteString("## Codex-Specific Comment Formatting\n\n")
-		b.WriteString("Codex often follows the per-turn reply command literally. Treat inline `--content \"...\"` examples as short single-line examples only. ")
-		b.WriteString("For paragraphs, bullets, code blocks, backticks, quotes, or any text where line breaks matter, use `--content-stdin` with a HEREDOC and keep the same `--parent` value from the trigger comment. ")
-		b.WriteString("Do not compress a multi-paragraph answer into one `--content` argument and do not rely on `\\n` escapes.\n\n")
+		b.WriteString("Codex often follows the per-turn reply command literally. For issue comments, always use `--content-stdin` with a HEREDOC, even for short single-line replies. ")
+		b.WriteString("Never use inline `--content` for agent-authored comments. Keep the same `--parent` value from the trigger comment when replying. ")
+		b.WriteString("Do not compress a multi-paragraph answer into one line and do not rely on `\\n` escapes.\n\n")
 	}
 
 	// Inject available repositories section.
@@ -143,24 +151,17 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 		b.WriteString("- If the task requires code changes, use `multica repo checkout <url>` to get the code first\n")
 		b.WriteString("- Keep responses concise and direct\n\n")
 	} else if ctx.QuickCreatePrompt != "" {
-		// Quick-create task: no issue exists yet. The agent's only job is to
-		// translate one line of natural language into a single
-		// `multica issue create` call. Suppress the default assignment
-		// workflow that would tell the agent to call `multica issue get` /
-		// `multica issue status` / `multica issue comment add` against an
-		// empty IssueID — those would either error or silently target the
-		// wrong issue.
-		b.WriteString("**This task was triggered by quick-create.** There is NO existing Multica issue. Translate the user's input into a single `multica issue create` invocation and exit.\n\n")
-		fmt.Fprintf(&b, "User input:\n> %s\n\n", ctx.QuickCreatePrompt)
-		b.WriteString("Field rules:\n")
-		b.WriteString("- title: required, short imperative summary extracted from the user input.\n")
-		b.WriteString("- description: optional; only include if the user supplied detail beyond the title.\n")
-		b.WriteString("- priority: one of `urgent`, `high`, `medium`, `low`, or omit. Map P0/P1 → urgent/high; \"asap\"/\"紧急\" → urgent; \"低优先级\" → low.\n")
-		b.WriteString("- assignee: when the user says \"分给 X\" / \"assign to X\" / \"@X\", call `multica workspace members --output json` and find the matching member. On clean match, pass `--assignee <name>`. On no/ambiguous match, OMIT `--assignee` and append a final line to the description: `未识别 assignee: X`.\n")
-		b.WriteString("- project / status: omit (defaults apply).\n\n")
-		b.WriteString("Output rules:\n")
-		b.WriteString("- Run exactly one `multica issue create` invocation.\n")
-		b.WriteString("- After it succeeds, print exactly one line: `Created MUL-<n>: <title>` and exit.\n")
+		// Quick-create task: detailed field / output rules live in the
+		// per-turn prompt (BuildPrompt → buildQuickCreatePrompt) so they
+		// have a single source of truth. Quick-create is one-shot, so the
+		// per-turn message is always present and the agent reads the rules
+		// from there. We only keep the hard guardrails here so a provider
+		// that doesn't propagate the user message into its working context
+		// (or a resumed session) still avoids the assignment-task workflow
+		// pointing at an empty issue id.
+		b.WriteString("**This task was triggered by quick-create.** There is NO existing Multica issue. Follow the field and output rules in the user message you just received; ignore the default assignment-task workflow.\n\n")
+		b.WriteString("Hard guardrails (apply even if the user message is missing):\n")
+		b.WriteString("- Run exactly one `multica issue create` invocation, then exit.\n")
 		b.WriteString("- Do NOT call `multica issue get`, `multica issue status`, or `multica issue comment add` for this task — there is no issue to query, transition, or comment on. The platform writes the user's success/failure inbox notification automatically based on whether `multica issue create` succeeded.\n")
 		b.WriteString("- If the CLI returns an error, exit with that error as the only output. Do not retry.\n\n")
 	} else if ctx.AutopilotRunID != "" {
@@ -206,8 +207,9 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 		// Assignment-triggered: defer to agent Skills for workflow specifics.
 		b.WriteString("You are responsible for managing the issue status throughout your work.\n\n")
 		fmt.Fprintf(&b, "1. Run `multica issue get %s --output json` to understand your task\n", ctx.IssueID)
-		fmt.Fprintf(&b, "2. Run `multica issue status %s in_progress`\n", ctx.IssueID)
-		b.WriteString("3. Read comments for additional context or human instructions\n")
+		fmt.Fprintf(&b, "2. Run `multica issue comment list %s --output json` to read the full comment history — this is mandatory, not optional. Earlier comments often carry context the issue body lacks (e.g. which repo to work in, the prior agent's findings, the reason the issue was reassigned to you). Skipping this step is the most common cause of agents acting on stale or incomplete instructions.\n", ctx.IssueID)
+		fmt.Fprintf(&b, "   - If the output is very large or truncated, use pagination: `--limit 30` to get the latest 30 comments, or `--since <timestamp>` to fetch only recent ones\n")
+		fmt.Fprintf(&b, "3. Run `multica issue status %s in_progress`\n", ctx.IssueID)
 		b.WriteString("4. Follow your Skills and Agent Identity to complete the task (write code, investigate, etc.)\n")
 		fmt.Fprintf(&b, "5. **Post your final results as a comment — this step is mandatory**: `multica issue comment add %s --content \"...\"`. Your results are only visible to the user if posted via this CLI call; text in your terminal or run logs is NOT delivered.\n", ctx.IssueID)
 		fmt.Fprintf(&b, "6. When done, run `multica issue status %s in_review`\n", ctx.IssueID)

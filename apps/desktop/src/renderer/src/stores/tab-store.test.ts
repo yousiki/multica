@@ -160,13 +160,102 @@ describe("useTabStore actions", () => {
     expect(activeTab?.path).toBe("/acme/issues/bug-42");
   });
 
-  it("openTab dedupes by path within the active workspace", () => {
+  it("openTab dedupes by path within the path's owning workspace", () => {
     const store = useTabStore.getState();
     store.switchWorkspace("acme");
     const id1 = store.openTab("/acme/projects", "Projects", "FolderKanban");
     const id2 = store.openTab("/acme/projects", "Projects", "FolderKanban");
     expect(id1).toBe(id2);
     expect(useTabStore.getState().byWorkspace.acme.tabs).toHaveLength(2); // default + projects
+  });
+
+  // Invariant: openTab is path-driven. The leading slug of the path
+  // determines which group receives the tab AND which workspace becomes
+  // active. Cross-workspace path → group leakage was the SHA-33 bug class
+  // this contract is designed to make impossible.
+  it("openTab from another workspace lands in the path's group and switches active workspace", () => {
+    const store = useTabStore.getState();
+    store.switchWorkspace("acme");
+    store.switchWorkspace("butter");
+    expect(useTabStore.getState().activeWorkspaceSlug).toBe("butter");
+
+    const tabId = store.openTab("/acme/issues/bug-42", "Bug 42", "ListTodo");
+
+    const s = useTabStore.getState();
+    expect(s.activeWorkspaceSlug).toBe("acme");
+    // The new tab must live in acme's group, never butter's.
+    const acmeTab = s.byWorkspace.acme.tabs.find((t) => t.id === tabId);
+    expect(acmeTab).toBeDefined();
+    expect(acmeTab?.path).toBe("/acme/issues/bug-42");
+    expect(s.byWorkspace.butter.tabs.some((t) => t.id === tabId)).toBe(false);
+    expect(
+      s.byWorkspace.butter.tabs.some((t) => t.path.startsWith("/acme/")),
+    ).toBe(false);
+  });
+
+  it("openTab into a previously-unseen workspace creates the group on demand", () => {
+    const store = useTabStore.getState();
+    store.switchWorkspace("butter"); // active = butter, no acme group yet
+    expect(useTabStore.getState().byWorkspace.acme).toBeUndefined();
+
+    const tabId = store.openTab("/acme/inbox?issue=abc", "Inbox", "Inbox");
+    const s = useTabStore.getState();
+    expect(s.activeWorkspaceSlug).toBe("acme");
+    expect(s.byWorkspace.acme.tabs).toHaveLength(1);
+    expect(s.byWorkspace.acme.tabs[0].id).toBe(tabId);
+    expect(s.byWorkspace.acme.tabs[0].path).toBe("/acme/inbox?issue=abc");
+    // Group seeded with this tab as the active one (unlike the
+    // existing-group case, because there is no prior active to preserve).
+    expect(s.byWorkspace.acme.activeTabId).toBe(tabId);
+  });
+
+  it("addTab from another workspace lands in the path's group and switches active workspace", () => {
+    const store = useTabStore.getState();
+    store.switchWorkspace("acme");
+    store.switchWorkspace("butter");
+
+    const tabId = store.addTab("/acme/projects", "Projects", "FolderKanban");
+
+    const s = useTabStore.getState();
+    expect(s.activeWorkspaceSlug).toBe("acme");
+    expect(s.byWorkspace.acme.tabs.some((t) => t.id === tabId)).toBe(true);
+    expect(s.byWorkspace.butter.tabs.some((t) => t.id === tabId)).toBe(false);
+  });
+
+  it("switchWorkspace rejects an openPath whose slug doesn't match the slug arg", () => {
+    const store = useTabStore.getState();
+    store.switchWorkspace("acme");
+    store.switchWorkspace("butter");
+    const beforeAcme = useTabStore.getState().byWorkspace.acme;
+    const beforeButter = useTabStore.getState().byWorkspace.butter;
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    store.switchWorkspace("acme", "/butter/issues");
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+
+    const s = useTabStore.getState();
+    // Active workspace stays where it was — neither side was mutated.
+    expect(s.activeWorkspaceSlug).toBe("butter");
+    expect(s.byWorkspace.acme).toBe(beforeAcme);
+    expect(s.byWorkspace.butter).toBe(beforeButter);
+  });
+
+  it("switchWorkspace permits openPath when its slug matches the slug arg", () => {
+    const store = useTabStore.getState();
+    store.switchWorkspace("acme");
+    store.switchWorkspace("butter"); // now active
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    store.switchWorkspace("acme", "/acme/projects");
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+
+    const s = useTabStore.getState();
+    expect(s.activeWorkspaceSlug).toBe("acme");
+    expect(s.byWorkspace.acme.tabs.map((t) => t.path)).toContain(
+      "/acme/projects",
+    );
   });
 
   it("closeTab on the last tab in a workspace reseeds the default tab", () => {

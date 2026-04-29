@@ -12,6 +12,8 @@
  *  - Zero runtime deps means this module is safe in Node (tests) and browsers
  */
 
+import { isReservedSlug } from "./reserved-slugs";
+
 const encode = (id: string) => encodeURIComponent(id);
 
 function workspaceScoped(slug: string) {
@@ -58,4 +60,22 @@ const GLOBAL_PREFIXES = ["/login", "/workspaces/", "/invite/", "/onboarding", "/
 
 export function isGlobalPath(path: string): boolean {
   return GLOBAL_PREFIXES.some((p) => path === p || path.startsWith(p));
+}
+
+/**
+ * Extract the leading workspace slug from a path, or null if the path
+ * isn't workspace-scoped (root, empty, or any reserved-slug prefix —
+ * `/login`, `/workspaces/...`, `/issues`, etc).
+ *
+ * This is `paths.workspace(slug).<route>()`'s inverse: given a URL string
+ * built from `paths`, recover the owning workspace slug. Used wherever
+ * platform code needs to decide which workspace a path belongs to —
+ * tab-store group routing, desktop cross-workspace navigation. Co-located
+ * with `isReservedSlug` because it depends on that classification.
+ */
+export function extractWorkspaceSlug(path: string): string | null {
+  const first = path.split("/").filter(Boolean)[0] ?? "";
+  if (!first) return null;
+  if (isReservedSlug(first)) return null;
+  return first;
 }

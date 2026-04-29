@@ -3,7 +3,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { arrayMove } from "@dnd-kit/sortable";
 import { createPersistStorage, defaultStorage } from "@multica/core/platform";
 import { createSafeId } from "@multica/core/utils";
-import { isReservedSlug } from "@multica/core/paths";
+import { extractWorkspaceSlug, isReservedSlug } from "@multica/core/paths";
 import type { DataRouter } from "react-router-dom";
 import { createTabRouter } from "../routes";
 
@@ -49,17 +49,36 @@ interface TabStore {
   byWorkspace: Record<string, WorkspaceTabGroup>;
 
   /**
-   * Switch to a workspace.
+   * Switch to a workspace without specifying a target path — used by the
+   * sidebar workspace switcher and similar "go to X" affordances.
    *   - If the group doesn't exist yet, create it with a single default tab.
-   *   - If `openPath` is given, find a tab with that exact path and activate
-   *     it; otherwise add a new tab and activate it.
+   *   - If `openPath` is given, it MUST belong to `slug`
+   *     (`extractWorkspaceSlug(openPath) === slug`); a mismatch is rejected
+   *     with a console.warn and no state change. To open a tab whose path
+   *     determines the target workspace, call `openTab(path, ...)` instead.
+   *   - If `openPath` matches an existing tab in the group, activate it;
+   *     otherwise add a new tab and activate it.
    *   - If `openPath` is omitted, restore the group's last active tab
    *     (VSCode / Slack behavior — workspaces resume where you left off).
    */
   switchWorkspace: (slug: string, openPath?: string) => void;
-  /** Open-or-activate (dedupes by path) a tab in the active workspace. */
+  /**
+   * Open-or-activate a tab by path. Path-driven: the leading workspace slug
+   * of `path` decides which `byWorkspace` group is written to and becomes
+   * the active workspace. If that group doesn't exist yet, it's created
+   * with this tab as the seed (semantically absorbs `switchWorkspace`'s
+   * auto-create). If a tab with the same path already exists in the group,
+   * it's activated and its id returned — no duplicate.
+   *
+   * Returns "" only if the path is malformed (sanitization rejects it),
+   * which by construction cannot leak a workspace mismatch into the store.
+   */
   openTab: (path: string, title: string, icon: string) => string;
-  /** Always creates a new tab (no dedupe) in the active workspace. */
+  /**
+   * Always creates a new tab (no dedupe). Same path-driven group routing
+   * as `openTab`: the new tab lands in the group named by `path`'s leading
+   * slug, and that group becomes active.
+   */
   addTab: (path: string, title: string, icon: string) => string;
   /**
    * Close a tab. Finds it across all workspaces (callers like the X button
@@ -123,15 +142,6 @@ const ROUTE_ICONS: Record<string, string> = {
 export function resolveRouteIcon(pathname: string): string {
   const segments = pathname.split("/").filter(Boolean);
   return ROUTE_ICONS[segments[1] ?? ""] ?? "ListTodo";
-}
-
-/** Extract the leading workspace slug from a path, or null if the path
- *  isn't workspace-scoped (global path, root, or empty). */
-function extractWorkspaceSlug(path: string): string | null {
-  const first = path.split("/").filter(Boolean)[0] ?? "";
-  if (!first) return null;
-  if (isReservedSlug(first)) return null;
-  return first;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +244,24 @@ export const useTabStore = create<TabStore>()(
         // NavigationAdapter's path-parser should already have filtered
         // these, but belt-and-braces keeps garbage out of the store.
         if (!slug) return;
+
+        // Invariant: if openPath is provided, its leading slug must match
+        // `slug`. Mixing them is the bug class this whole refactor is
+        // designed to prevent — refusing here is louder than silently
+        // routing to the path's slug, because the caller is wrong about
+        // *intent*, not just about path-vs-slug arithmetic.
+        if (openPath) {
+          const pathSlug = extractWorkspaceSlug(openPath);
+          if (pathSlug !== null && pathSlug !== slug) {
+            console.warn(
+              `[tab-store] switchWorkspace("${slug}", "${openPath}") rejected — ` +
+                `path belongs to workspace "${pathSlug}". Use openTab(path) for ` +
+                `path-driven routing.`,
+            );
+            return;
+          }
+        }
+
         const { byWorkspace } = get();
         const existing = byWorkspace[slug];
 
@@ -293,51 +321,88 @@ export const useTabStore = create<TabStore>()(
       },
 
       openTab(path, title, icon) {
-        const { activeWorkspaceSlug, byWorkspace } = get();
+        const { byWorkspace } = get();
         const clean = sanitizeTabPath(path);
-        if (!activeWorkspaceSlug || !clean) return "";
-        const group = byWorkspace[activeWorkspaceSlug];
-        if (!group) return "";
+        if (!clean) return "";
+        // sanitizeTabPath already rejects reserved-slug-leading paths, so
+        // any clean path is workspace-scoped and extractWorkspaceSlug must
+        // return a non-null slug — the assertion is a type narrowing.
+        const targetSlug = extractWorkspaceSlug(clean);
+        if (!targetSlug) return "";
 
-        const existing = group.tabs.find((t) => t.path === clean);
+        const existing = byWorkspace[targetSlug];
         if (existing) {
+          const match = existing.tabs.find((t) => t.path === clean);
+          if (match) {
+            // Dedupe: activate the existing tab AND switch to its workspace.
+            set({
+              activeWorkspaceSlug: targetSlug,
+              byWorkspace: {
+                ...byWorkspace,
+                [targetSlug]: { ...existing, activeTabId: match.id },
+              },
+            });
+            return match.id;
+          }
+          const tab = makeTab(clean, title, icon);
+          // Add the tab to the target group and switch to it. The group's
+          // activeTabId is preserved so callers that intend the new tab to
+          // be active still need to call setActiveTab(tabId) — matches the
+          // historical contract every existing caller already relies on.
           set({
+            activeWorkspaceSlug: targetSlug,
             byWorkspace: {
               ...byWorkspace,
-              [activeWorkspaceSlug]: { ...group, activeTabId: existing.id },
+              [targetSlug]: {
+                tabs: [...existing.tabs, tab],
+                activeTabId: existing.activeTabId,
+              },
             },
           });
-          return existing.id;
+          return tab.id;
         }
 
+        // Group doesn't exist yet — semantically the same as
+        // switchWorkspace(targetSlug, path) without the asymmetric
+        // "default-tab seed". Create a group containing only this tab.
         const tab = makeTab(clean, title, icon);
         set({
+          activeWorkspaceSlug: targetSlug,
           byWorkspace: {
             ...byWorkspace,
-            [activeWorkspaceSlug]: {
-              tabs: [...group.tabs, tab],
-              activeTabId: group.activeTabId,
-            },
+            [targetSlug]: { tabs: [tab], activeTabId: tab.id },
           },
         });
         return tab.id;
       },
 
       addTab(path, title, icon) {
-        const { activeWorkspaceSlug, byWorkspace } = get();
+        const { byWorkspace } = get();
         const clean = sanitizeTabPath(path);
-        if (!activeWorkspaceSlug || !clean) return "";
-        const group = byWorkspace[activeWorkspaceSlug];
-        if (!group) return "";
+        if (!clean) return "";
+        const targetSlug = extractWorkspaceSlug(clean);
+        if (!targetSlug) return "";
 
+        const existing = byWorkspace[targetSlug];
         const tab = makeTab(clean, title, icon);
+        if (existing) {
+          set({
+            activeWorkspaceSlug: targetSlug,
+            byWorkspace: {
+              ...byWorkspace,
+              [targetSlug]: {
+                tabs: [...existing.tabs, tab],
+                activeTabId: existing.activeTabId,
+              },
+            },
+          });
+          return tab.id;
+        }
         set({
+          activeWorkspaceSlug: targetSlug,
           byWorkspace: {
             ...byWorkspace,
-            [activeWorkspaceSlug]: {
-              tabs: [...group.tabs, tab],
-              activeTabId: group.activeTabId,
-            },
+            [targetSlug]: { tabs: [tab], activeTabId: tab.id },
           },
         });
         return tab.id;

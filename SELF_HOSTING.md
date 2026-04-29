@@ -14,17 +14,20 @@ Each user who runs AI agents locally also installs the **`multica` CLI** and run
 
 ## Quick Install (Recommended)
 
-Two commands to set up everything — server, CLI, and configuration:
+This fork ships its own Docker images at `ghcr.io/yousiki/multica-{backend,web}` via the release workflow on `yousiki/multica`. The fastest path is to clone the fork and let `make selfhost` pull those images:
 
 ```bash
-# 1. Install CLI + provision the self-host server
-curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash -s -- --with-server
+# 1. Clone this fork and start the self-host stack (pulls fork images from GHCR)
+git clone https://github.com/yousiki/multica.git
+cd multica
+make selfhost
 
-# 2. Configure CLI, authenticate, and start the daemon
+# 2. Install the CLI, then configure it, authenticate, and start the daemon
+brew install multica-ai/tap/multica
 multica setup self-host
 ```
 
-This installs the `multica` CLI, checks out the latest self-host assets, pulls the official Multica images from GHCR, and configures everything for localhost.
+`make selfhost` creates `.env` from the example, generates a random `JWT_SECRET`, and pulls `ghcr.io/yousiki/multica-backend:latest` + `ghcr.io/yousiki/multica-web:latest`. The CLI itself still ships from the upstream Homebrew tap because the wire protocol is shared.
 
 Open http://localhost:3000. To log in, configure `RESEND_API_KEY` in `.env` for email-based codes (recommended), or leave Resend unset and copy the generated code from the backend logs. See [Step 2 — Log In](#step-2--log-in) for details.
 
@@ -47,14 +50,14 @@ If you prefer to run each step manually:
 **Prerequisites:** Docker and Docker Compose.
 
 ```bash
-git clone https://github.com/multica-ai/multica.git
+git clone https://github.com/yousiki/multica.git
 cd multica
 make selfhost
 ```
 
 `make selfhost` automatically creates `.env` from the example, generates a random `JWT_SECRET`, and starts all services via Docker Compose.
 
-By default it pulls the latest stable release images from GHCR. To build the backend/web from your current checkout instead, run `make selfhost-build`.
+By default it pulls the latest stable release images this fork publishes to GHCR (`ghcr.io/yousiki/multica-backend:latest` / `ghcr.io/yousiki/multica-web:latest`). To track the latest `main` instead, set `MULTICA_IMAGE_TAG=edge` in `.env`. To build the backend/web from your current checkout, run `make selfhost-build`.
 If the selected GHCR tag has not been published yet, `make selfhost` now tells you to fall back to `make selfhost-build`.
 `make selfhost-build` uses local `multica-backend:dev` / `multica-web:dev` tags, so it does not overwrite the pulled `:latest` images.
 
@@ -136,13 +139,7 @@ multica daemon status
 
 ## Stopping Services
 
-If you installed via the install script:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash -s -- --stop
-```
-
-If you cloned the repo manually:
+From the cloned fork repo:
 
 ```bash
 # Stop the Docker Compose services (backend, frontend, database)
@@ -181,7 +178,7 @@ If the selected GHCR tag has not been published yet, fall back to `make selfhost
 If you prefer running Docker Compose steps manually instead of `make selfhost`:
 
 ```bash
-git clone https://github.com/multica-ai/multica.git
+git clone https://github.com/yousiki/multica.git
 cd multica
 cp .env.example .env
 ```

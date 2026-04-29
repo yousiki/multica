@@ -78,14 +78,17 @@ irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps
 multica setup          # 连接 Multica Cloud，登录，启动 daemon
 ```
 
-> **自部署？** 加上 `--with-server` 在本地部署完整的 Multica 服务：
+> **自部署本 fork？** 克隆仓库并用 fork 自建镜像启动整套服务：
 >
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash -s -- --with-server
+> git clone https://github.com/yousiki/multica.git
+> cd multica
+> make selfhost
 > multica setup self-host
 > ```
 >
-> 需要 Docker。详见 [自部署指南](SELF_HOSTING.md)。
+> `docker-compose.selfhost.yml` 默认拉取 `ghcr.io/yousiki/multica-{backend,web}`——本 fork 自己 release workflow 发布的镜像。需要 Docker。详见 [自部署指南](SELF_HOSTING.md)。
+> 若所选 GHCR tag 尚未发布，回退到 `make selfhost-build` 从当前 checkout 构建。
 
 ---
 

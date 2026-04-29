@@ -78,15 +78,17 @@ Then configure, authenticate, and start the daemon in one command:
 multica setup          # Connect to Multica Cloud, log in, start daemon
 ```
 
-> **Self-hosting?** Add `--with-server` to deploy a full Multica server on your machine:
+> **Self-hosting this fork?** Clone the repo and bring up the stack with the fork's prebuilt images:
 >
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash -s -- --with-server
+> git clone https://github.com/yousiki/multica.git
+> cd multica
+> make selfhost
 > multica setup self-host
 > ```
 >
-> This pulls the official Multica images from GHCR (latest stable by default). Requires Docker. See the [Self-Hosting Guide](SELF_HOSTING.md) for details.
-> If the selected GHCR tag has not been published yet, fall back to `make selfhost-build` from a checkout.
+> `docker-compose.selfhost.yml` defaults to `ghcr.io/yousiki/multica-{backend,web}` — images this fork publishes via its own release workflow. Requires Docker. See the [Self-Hosting Guide](SELF_HOSTING.md) for details.
+> If the selected GHCR tag has not been published yet, fall back to `make selfhost-build` to build from the checkout.
 
 ---
 

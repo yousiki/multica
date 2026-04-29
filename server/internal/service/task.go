@@ -242,11 +242,11 @@ func (s *TaskService) EnqueueQuickCreateTask(ctx context.Context, workspaceID, r
 		"requester_id", util.UUIDToString(requesterID),
 		"workspace_id", util.UUIDToString(workspaceID),
 	)
-	// Match every other Enqueue* path: kick the daemon WS so the task
-	// gets claimed promptly instead of waiting for the next 30 s poll
-	// cycle. Without this the user perceives "quick create never
-	// triggered" because the modal closes immediately and the task
-	// sits in 'queued' until the next sleepWithContextOrWakeup tick.
+	// See EnqueueTaskForIssue for ordering rationale: broadcast queued
+	// first so clients observe the queued → dispatched → completed
+	// sequence in order, then kick the daemon so it claims the task
+	// promptly instead of waiting for the next poll tick.
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.notifyTaskAvailable(task)
 	return task, nil
 }

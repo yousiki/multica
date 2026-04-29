@@ -285,11 +285,19 @@ func (h *Handler) removeRepoBindingFromScope(ctx context.Context, scopeType stri
 		}
 	}
 
-	if err := qtx.DeleteRepoBinding(ctx, db.DeleteRepoBindingParams{
+	// `:one DELETE … RETURNING` so we can tell apart "binding existed and was
+	// dropped" from "URL resolves to a repo, but it isn't bound on this
+	// scope". The latter is a 404 at the HTTP layer — the plain :exec variant
+	// would silently 204, which Codex flagged as masking no-op deletes for
+	// URLs that happen to be bound at workspace or another project scope.
+	if _, err := qtx.DeleteRepoBindingIfExists(ctx, db.DeleteRepoBindingIfExistsParams{
 		RepoID:    repo.ID,
 		ScopeType: scopeType,
 		ScopeID:   scopeID,
 	}); err != nil {
+		if isNotFound(err) {
+			return errRepoBindingNotFound
+		}
 		return err
 	}
 	if err := qtx.DeleteOrphanRepos(ctx); err != nil {

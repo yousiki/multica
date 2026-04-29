@@ -161,6 +161,119 @@ func TestProjectRepos_DeleteUnknownReturns404(t *testing.T) {
 	}
 }
 
+// TestProjectRepos_DeleteUrlBoundElsewhereReturns404 is the regression Codex
+// flagged: a repo URL exists in the catalog because it's bound at workspace
+// (or another project) scope, but it's NOT bound to *this* project. The
+// previous `:exec DELETE` would hit zero rows and return 204, masking the
+// no-op. The fixed handler uses RETURNING to detect that and returns 404 so
+// the frontend / CLI know the call did nothing.
+func TestProjectRepos_DeleteUrlBoundElsewhereReturns404(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	wsUUID := parseUUID(testWorkspaceID)
+	projectID := createProjectForRepoTest(t, "Bound-elsewhere project")
+
+	const sharedURL = "git@example.com:team/bound-at-workspace.git"
+	t.Cleanup(func() {
+		testHandler.Queries.DeleteRepoBindingsForScope(ctx, db.DeleteRepoBindingsForScopeParams{
+			ScopeType: repoScopeWorkspace,
+			ScopeID:   wsUUID,
+		})
+		testHandler.Queries.DeleteOrphanRepos(ctx)
+	})
+	if err := testHandler.setRepoBindingsForScope(ctx, repoScopeWorkspace, wsUUID, []RepoData{
+		{URL: sharedURL, Description: "lives at workspace scope"},
+	}); err != nil {
+		t.Fatalf("seed workspace binding: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	path := "/api/projects/" + projectID + "/repos?url=" + url.QueryEscape(sharedURL)
+	req := newRequest("DELETE", path, nil)
+	req = withURLParam(req, "id", projectID)
+	testHandler.DeleteProjectRepo(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when URL is bound elsewhere but not on this project, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Workspace binding must survive — the project DELETE must not have
+	// touched any other scope's bindings.
+	if _, err := testHandler.Queries.GetRepoByURL(ctx, sharedURL); err != nil {
+		t.Fatalf("workspace binding should still exist after a no-op project delete: %v", err)
+	}
+}
+
+// withTestMemberRole temporarily flips the test workspace member's role for
+// the duration of the test, restoring it on cleanup. The shared fixture seeds
+// the user as 'owner', so most tests run with admin rights — the role-gate
+// tests need to drop down to 'member' to assert the 403 path.
+func withTestMemberRole(t *testing.T, role string) {
+	t.Helper()
+	ctx := context.Background()
+	var prev string
+	if err := testPool.QueryRow(ctx, `
+		SELECT role FROM member WHERE workspace_id = $1 AND user_id = $2
+	`, testWorkspaceID, testUserID).Scan(&prev); err != nil {
+		t.Fatalf("read original role: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+		UPDATE member SET role = $1 WHERE workspace_id = $2 AND user_id = $3
+	`, role, testWorkspaceID, testUserID); err != nil {
+		t.Fatalf("downgrade role to %q: %v", role, err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `
+			UPDATE member SET role = $1 WHERE workspace_id = $2 AND user_id = $3
+		`, prev, testWorkspaceID, testUserID)
+	})
+}
+
+// TestProjectRepos_NonAdminGetsForbidden pins the role gate Codex flagged.
+// Plain 'member' role must get 403 on POST and DELETE. The router-level
+// `RequireWorkspaceRole` middleware enforces this, but the handler also
+// re-checks via `requireProjectRepoWriter` so the gate stays in place when
+// handlers are invoked directly (tests, future router refactors).
+func TestProjectRepos_NonAdminGetsForbidden(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	projectID := createProjectForRepoTest(t, "Role-gate project")
+
+	withTestMemberRole(t, "member")
+
+	// POST must 403.
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/projects/"+projectID+"/repos",
+		map[string]any{"url": "git@example.com:team/forbidden.git"})
+	req = withURLParam(req, "id", projectID)
+	testHandler.CreateProjectRepo(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("CreateProjectRepo as 'member': want 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// DELETE must 403 too — gate hits before binding lookup so the body
+	// doesn't matter.
+	w = httptest.NewRecorder()
+	path := "/api/projects/" + projectID + "/repos?url=" + url.QueryEscape("git@example.com:team/anything.git")
+	req = newRequest("DELETE", path, nil)
+	req = withURLParam(req, "id", projectID)
+	testHandler.DeleteProjectRepo(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("DeleteProjectRepo as 'member': want 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// GET must still succeed for plain members — reads stay open.
+	w = httptest.NewRecorder()
+	req = newRequest("GET", "/api/projects/"+projectID+"/repos", nil)
+	req = withURLParam(req, "id", projectID)
+	testHandler.ListProjectRepos(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ListProjectRepos as 'member': want 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // TestDeleteProject_OrphansBindings asserts that deleting a project drops its
 // repo bindings and GCs the catalog entry when no other scope references it.
 // The Step-1 workspace path covers the same contract; this makes sure Step 2

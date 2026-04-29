@@ -65,6 +65,63 @@ func projectRepoPath(projectID string) string {
 	return "/api/projects/" + url.PathEscape(strings.TrimSpace(projectID)) + "/repos"
 }
 
+// resolveProjectID accepts either a full project UUID or a UUID prefix (the
+// first N chars of one — `multica project list` shows the first 8 in table
+// mode and that's what users copy-paste). Full UUIDs short-circuit the API
+// call. For prefixes we list the workspace's projects and pick the unique
+// match; ambiguity or no match surfaces as an error here rather than as the
+// server's "invalid project id" 400, which would be confusing because the
+// CLI advertises `<project-id-or-prefix>` as a valid form.
+func resolveProjectID(ctx context.Context, client *cli.APIClient, input string) (string, error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return "", fmt.Errorf("project id is required")
+	}
+	if looksLikeUUID(input) {
+		return input, nil
+	}
+
+	path := "/api/projects"
+	if client.WorkspaceID != "" {
+		path += "?workspace_id=" + url.QueryEscape(client.WorkspaceID)
+	}
+
+	var listResp struct {
+		Projects []struct {
+			ID    string `json:"id"`
+			Title string `json:"title"`
+		} `json:"projects"`
+	}
+	if err := client.GetJSON(ctx, path, &listResp); err != nil {
+		return "", fmt.Errorf("resolve project prefix %q: %w", input, err)
+	}
+
+	var matches []string
+	var titles []string
+	prefix := strings.ToLower(input)
+	for _, p := range listResp.Projects {
+		if strings.HasPrefix(strings.ToLower(p.ID), prefix) {
+			matches = append(matches, p.ID)
+			titles = append(titles, p.Title)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("no project matches %q in this workspace", input)
+	case 1:
+		return matches[0], nil
+	default:
+		// Show the first few to help the user disambiguate without
+		// dumping the entire list.
+		sample := titles
+		if len(sample) > 5 {
+			sample = sample[:5]
+		}
+		return "", fmt.Errorf("project prefix %q is ambiguous (%d matches: %s)",
+			input, len(matches), strings.Join(sample, ", "))
+	}
+}
+
 func runProjectRepoList(cmd *cobra.Command, args []string) error {
 	client, err := newAPIClient(cmd)
 	if err != nil {
@@ -73,13 +130,18 @@ func runProjectRepoList(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	projectID, err := resolveProjectID(ctx, client, args[0])
+	if err != nil {
+		return err
+	}
+
 	var result struct {
 		Repos []struct {
 			URL         string `json:"url"`
 			Description string `json:"description"`
 		} `json:"repos"`
 	}
-	if err := client.GetJSON(ctx, projectRepoPath(args[0]), &result); err != nil {
+	if err := client.GetJSON(ctx, projectRepoPath(projectID), &result); err != nil {
 		return fmt.Errorf("list project repos: %w", err)
 	}
 
@@ -111,6 +173,11 @@ func runProjectRepoAdd(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	projectID, err := resolveProjectID(ctx, client, args[0])
+	if err != nil {
+		return err
+	}
+
 	body := map[string]any{
 		"url":         strings.TrimSpace(args[1]),
 		"description": "",
@@ -120,7 +187,7 @@ func runProjectRepoAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	var result map[string]any
-	if err := client.PostJSON(ctx, projectRepoPath(args[0]), body, &result); err != nil {
+	if err := client.PostJSON(ctx, projectRepoPath(projectID), body, &result); err != nil {
 		return fmt.Errorf("add project repo: %w", err)
 	}
 
@@ -128,7 +195,7 @@ func runProjectRepoAdd(cmd *cobra.Command, args []string) error {
 	if output == "json" {
 		return cli.PrintJSON(os.Stdout, result)
 	}
-	fmt.Fprintf(os.Stderr, "Bound %s to project %s.\n", args[1], truncateID(args[0]))
+	fmt.Fprintf(os.Stderr, "Bound %s to project %s.\n", args[1], truncateID(projectID))
 	return nil
 }
 
@@ -140,10 +207,15 @@ func runProjectRepoRemove(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	projectID, err := resolveProjectID(ctx, client, args[0])
+	if err != nil {
+		return err
+	}
+
 	// `args[1]` is either a UUID or a git URL. URLs contain `/` so they go on
 	// the query string; UUIDs go on the path. The server accepts either.
 	target := strings.TrimSpace(args[1])
-	path := projectRepoPath(args[0])
+	path := projectRepoPath(projectID)
 	if looksLikeURL(target) {
 		path += "?url=" + url.QueryEscape(target)
 	} else {
@@ -154,7 +226,7 @@ func runProjectRepoRemove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("remove project repo: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "Unbound %s from project %s.\n", target, truncateID(args[0]))
+	fmt.Fprintf(os.Stderr, "Unbound %s from project %s.\n", target, truncateID(projectID))
 	return nil
 }
 

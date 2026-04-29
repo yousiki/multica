@@ -67,6 +67,18 @@ WHERE repo_id    = $1
   AND scope_type = $2
   AND scope_id   = $3;
 
+-- name: DeleteRepoBindingIfExists :one
+-- Returns the deleted row so the caller can distinguish "nothing matched on
+-- this scope" (zero rows → 404) from "deleted successfully" (one row → 204).
+-- The plain `:exec` variant above keeps existing call sites working and
+-- silently no-ops for the wipe-and-replace path; per-binding REST handlers
+-- need the existence proof.
+DELETE FROM repo_binding
+WHERE repo_id    = $1
+  AND scope_type = $2
+  AND scope_id   = $3
+RETURNING id, repo_id, scope_type, scope_id, description, created_at;
+
 -- name: DeleteRepoBindingsForScope :exec
 DELETE FROM repo_binding
 WHERE scope_type = $1

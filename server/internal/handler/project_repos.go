@@ -39,6 +39,34 @@ func (h *Handler) projectRepoFromURL(w http.ResponseWriter, r *http.Request) (db
 	return project, workspaceID, true
 }
 
+// requireProjectRepoWriter loads the project + asserts the caller is an
+// owner / admin in the project's workspace. The router-level
+// `RequireWorkspaceRole` middleware enforces the same gate, but that
+// middleware doesn't fire when handlers are called directly (tests, future
+// router refactors), so the handler re-checks the role from the resolved
+// member — same defense-in-depth shape DeleteWorkspace uses.
+//
+// Anchoring the role to the *project's* workspace (rather than whatever the
+// caller's session header says) means a member of workspace A who somehow
+// resolves to a project in workspace B can't sneak past the role gate; the
+// `GetProjectInWorkspace` call inside `projectRepoFromURL` already asserts
+// they match, so by the time we re-check the role it's against the right ws.
+func (h *Handler) requireProjectRepoWriter(w http.ResponseWriter, r *http.Request) (db.Project, string, bool) {
+	project, workspaceID, ok := h.projectRepoFromURL(w, r)
+	if !ok {
+		return db.Project{}, "", false
+	}
+	member, ok := h.workspaceMember(w, r, workspaceID)
+	if !ok {
+		return db.Project{}, "", false
+	}
+	if !roleAllowed(member.Role, "owner", "admin") {
+		writeError(w, http.StatusForbidden, "insufficient permissions")
+		return db.Project{}, "", false
+	}
+	return project, workspaceID, true
+}
+
 // ListProjectRepos returns the repos bound at project scope. The response
 // shape mirrors the workspace `repos` field (`[{url, description}]`) so the
 // frontend can reuse the same RepoListEditor component without translation.
@@ -72,7 +100,7 @@ type CreateProjectRepoRequest struct {
 // matches the workspace settings flow, where saving the same list twice is a
 // no-op.
 func (h *Handler) CreateProjectRepo(w http.ResponseWriter, r *http.Request) {
-	project, workspaceID, ok := h.projectRepoFromURL(w, r)
+	project, workspaceID, ok := h.requireProjectRepoWriter(w, r)
 	if !ok {
 		return
 	}
@@ -116,7 +144,7 @@ func (h *Handler) CreateProjectRepo(w http.ResponseWriter, r *http.Request) {
 // query string. URL-on-path is avoided because percent-decoded slashes inside
 // a git URL collide with chi's segment separator.
 func (h *Handler) DeleteProjectRepo(w http.ResponseWriter, r *http.Request) {
-	project, workspaceID, ok := h.projectRepoFromURL(w, r)
+	project, workspaceID, ok := h.requireProjectRepoWriter(w, r)
 	if !ok {
 		return
 	}

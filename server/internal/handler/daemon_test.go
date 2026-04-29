@@ -57,18 +57,31 @@ func (s *popRecordingLocalSkillImportStore) PopPending(ctx context.Context, runt
 	return s.LocalSkillImportStore.PopPending(ctx, runtimeID)
 }
 
+// setHandlerTestWorkspaceRepos rewrites the workspace's repo bindings to
+// exactly the supplied list by routing the test through the same
+// setRepoBindingsForScope path the production PATCH /workspaces/:id handler
+// uses. Going through the helper instead of duplicating raw SQL means the
+// test is automatically correct against future schema changes (description
+// already moved between tables once between PR commits) and exercises the
+// same orphan-GC behavior end-to-end.
 func setHandlerTestWorkspaceRepos(t *testing.T, repos []map[string]string) {
 	t.Helper()
-	data, err := json.Marshal(repos)
-	if err != nil {
-		t.Fatalf("marshal repos: %v", err)
+	ctx := context.Background()
+	wsUUID := parseUUID(testWorkspaceID)
+
+	repoData := make([]RepoData, 0, len(repos))
+	for _, r := range repos {
+		repoData = append(repoData, RepoData{
+			URL:         r["url"],
+			Description: r["description"],
+		})
 	}
-	if _, err := testPool.Exec(context.Background(), `UPDATE workspace SET repos = $1 WHERE id = $2`, data, testWorkspaceID); err != nil {
-		t.Fatalf("update workspace repos: %v", err)
+	if err := testHandler.setRepoBindingsForScope(ctx, repoScopeWorkspace, wsUUID, repoData); err != nil {
+		t.Fatalf("set workspace repo bindings: %v", err)
 	}
 	t.Cleanup(func() {
-		if _, err := testPool.Exec(context.Background(), `UPDATE workspace SET repos = $1 WHERE id = $2`, []byte("[]"), testWorkspaceID); err != nil {
-			t.Fatalf("reset workspace repos: %v", err)
+		if err := testHandler.setRepoBindingsForScope(ctx, repoScopeWorkspace, wsUUID, nil); err != nil {
+			t.Fatalf("reset workspace repo bindings: %v", err)
 		}
 	})
 }
@@ -750,17 +763,22 @@ func TestGetDaemonWorkspaceRepos_VersionIgnoresOrderAndDescription(t *testing.T)
 
 	version1 := getReposVersion()
 
-	if _, err := testPool.Exec(context.Background(), `UPDATE workspace SET repos = $1 WHERE id = $2`, []byte(`[{"url":"git@example.com:team/web.git","description":"frontend"},{"url":"git@example.com:team/api.git","description":"backend"}]`), testWorkspaceID); err != nil {
-		t.Fatalf("update workspace repos: %v", err)
-	}
+	// Same URL set, swapped order and edited descriptions: the version should
+	// be stable.
+	setHandlerTestWorkspaceRepos(t, []map[string]string{
+		{"url": "git@example.com:team/web.git", "description": "frontend"},
+		{"url": "git@example.com:team/api.git", "description": "backend"},
+	})
 	version2 := getReposVersion()
 	if version1 != version2 {
 		t.Fatalf("expected repos_version to ignore order/description changes, got %s vs %s", version1, version2)
 	}
 
-	if _, err := testPool.Exec(context.Background(), `UPDATE workspace SET repos = $1 WHERE id = $2`, []byte(`[{"url":"git@example.com:team/api.git","description":"backend"},{"url":"git@example.com:team/mobile.git","description":"mobile"}]`), testWorkspaceID); err != nil {
-		t.Fatalf("update workspace repos: %v", err)
-	}
+	// Different URL set: the version must change so daemons re-sync.
+	setHandlerTestWorkspaceRepos(t, []map[string]string{
+		{"url": "git@example.com:team/api.git", "description": "backend"},
+		{"url": "git@example.com:team/mobile.git", "description": "mobile"},
+	})
 	version3 := getReposVersion()
 	if strings.EqualFold(version2, version3) {
 		t.Fatalf("expected repos_version to change when URL set changes, got %s", version3)

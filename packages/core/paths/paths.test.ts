@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { paths, isGlobalPath } from "./paths";
+import { paths, isGlobalPath, extractWorkspaceSlug } from "./paths";
 
 describe("paths.workspace(slug)", () => {
   const ws = paths.workspace("acme");
@@ -45,5 +45,28 @@ describe("isGlobalPath", () => {
   it("returns false for workspace-scoped paths", () => {
     expect(isGlobalPath("/acme/issues")).toBe(false);
     expect(isGlobalPath("/")).toBe(false);
+  });
+});
+
+describe("extractWorkspaceSlug", () => {
+  it("returns the leading slug for workspace-scoped paths", () => {
+    expect(extractWorkspaceSlug("/acme/issues")).toBe("acme");
+    expect(extractWorkspaceSlug("/acme/issues/abc")).toBe("acme");
+    expect(extractWorkspaceSlug("/my-team/inbox?issue=123")).toBe("my-team");
+  });
+
+  it("returns null for root, empty, and reserved-slug paths", () => {
+    expect(extractWorkspaceSlug("/")).toBeNull();
+    expect(extractWorkspaceSlug("")).toBeNull();
+    expect(extractWorkspaceSlug("/login")).toBeNull();
+    expect(extractWorkspaceSlug("/workspaces/new")).toBeNull();
+    expect(extractWorkspaceSlug("/invite/abc")).toBeNull();
+    expect(extractWorkspaceSlug("/issues")).toBeNull();
+    expect(extractWorkspaceSlug("/settings")).toBeNull();
+  });
+
+  it("does not classify user slugs that contain reserved words as substrings as reserved", () => {
+    expect(extractWorkspaceSlug("/issues-team/issues")).toBe("issues-team");
+    expect(extractWorkspaceSlug("/login-team/inbox")).toBe("login-team");
   });
 });

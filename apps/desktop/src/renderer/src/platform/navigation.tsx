@@ -5,7 +5,7 @@ import {
   type NavigationAdapter,
 } from "@multica/views/navigation";
 import { useAuthStore } from "@multica/core/auth";
-import { isReservedSlug } from "@multica/core/paths";
+import { extractWorkspaceSlug } from "@multica/core/paths";
 import {
   useTabStore,
   resolveRouteIcon,
@@ -20,17 +20,6 @@ import { useWindowOverlayStore } from "@/stores/window-overlay-store";
 // link" in a dev build yields a URL that points at the running dev
 // frontend, not the prod host. Matches the fallback used in pages/login.tsx.
 const APP_URL = import.meta.env.VITE_APP_URL || "http://localhost:3000";
-
-/**
- * Extract the leading workspace slug from a path, or null if the path isn't
- * workspace-scoped (root, login, any reserved prefix).
- */
-function extractWorkspaceSlug(path: string): string | null {
-  const first = path.split("/").filter(Boolean)[0] ?? "";
-  if (!first) return null;
-  if (isReservedSlug(first)) return null;
-  return first;
-}
 
 /**
  * Intercept navigation to "transition" paths — pre-workspace flows that on

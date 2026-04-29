@@ -3,7 +3,6 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@multica/ui/lib/utils";
 import { useTabHistory } from "@/hooks/use-tab-history";
 import { useActiveTitleSync } from "@/hooks/use-tab-sync";
-import { useTabStore, resolveRouteIcon } from "@/stores/tab-store";
 import {
   SidebarProvider,
   SidebarTrigger,
@@ -17,7 +16,10 @@ import { StarterContentPrompt } from "@multica/views/onboarding";
 import { WorkspaceSlugProvider, paths, useCurrentWorkspace } from "@multica/core/paths";
 import { getCurrentSlug, subscribeToCurrentSlug } from "@multica/core/platform";
 import { useDesktopUnreadBadge } from "@multica/views/platform";
-import { DesktopNavigationProvider } from "@/platform/navigation";
+import {
+  DesktopNavigationProvider,
+  navigateDesktopPath,
+} from "@/platform/navigation";
 import { TabBar } from "./tab-bar";
 import { TabContent } from "./tab-content";
 import { WindowOverlay } from "./window-overlay";
@@ -83,21 +85,6 @@ function MainTopBar() {
   );
 }
 
-function useInternalLinkHandler() {
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const path = (e as CustomEvent).detail?.path;
-      if (!path) return;
-      const icon = resolveRouteIcon(path);
-      const store = useTabStore.getState();
-      const tabId = store.openTab(path, path, icon);
-      store.setActiveTab(tabId);
-    };
-    window.addEventListener("multica:navigate", handler);
-    return () => window.removeEventListener("multica:navigate", handler);
-  }, []);
-}
-
 /**
  * Bridge between the renderer and the Electron main process for inbox-level
  * OS integration. Mounted inside WorkspaceSlugProvider so it can resolve the
@@ -121,9 +108,11 @@ function DesktopInboxBridge() {
     return window.desktopAPI.onInboxOpen(({ slug, issueKey }) => {
       if (!slug) return;
       const inboxPath = `${paths.workspace(slug).inbox()}?issue=${encodeURIComponent(issueKey)}`;
-      window.dispatchEvent(
-        new CustomEvent("multica:navigate", { detail: { path: inboxPath } }),
-      );
+      // Funnel through the unified navigator: same-workspace notifications
+      // open or activate the inbox tab; cross-workspace notifications also
+      // flip the active workspace via the path-driven openTab path. No
+      // CustomEvent indirection — the click handler IS the navigation.
+      navigateDesktopPath({ path: inboxPath, mode: "new-tab" });
     });
   }, []);
 
@@ -131,7 +120,6 @@ function DesktopInboxBridge() {
 }
 
 export function DesktopShell() {
-  useInternalLinkHandler();
   useActiveTitleSync();
 
   // Reactive read of current workspace slug from the platform singleton.

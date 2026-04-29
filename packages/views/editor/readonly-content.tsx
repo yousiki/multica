@@ -33,12 +33,13 @@ import { toHtml } from "hast-util-to-html";
 import { Maximize2, Download, Link as LinkIcon, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@multica/ui/lib/utils";
-import { useWorkspacePaths, useWorkspaceSlug } from "@multica/core/paths";
+import { useWorkspacePaths } from "@multica/core/paths";
 import { useNavigation } from "../navigation";
 import { IssueMentionCard } from "../issues/components/issue-mention-card";
 import { ImageLightbox } from "./extensions/image-view";
 import { useLinkHover, LinkHoverCard } from "./link-hover-card";
-import { openLink, isMentionHref } from "./utils/link-handler";
+import { isMentionHref } from "./utils/link-handler";
+import { useOpenLink } from "./utils/use-open-link";
 import { preprocessMarkdown } from "./utils/preprocess";
 import "katex/dist/katex.min.css";
 import "./content-editor.css";
@@ -127,7 +128,7 @@ function ReadonlyLink({
   href?: string;
   children?: React.ReactNode;
 }) {
-  const slug = useWorkspaceSlug();
+  const openLink = useOpenLink();
 
   if (isMentionHref(href)) {
     const match = href.match(/^mention:\/\/(member|agent|issue|all)\/(.+)$/);
@@ -150,7 +151,7 @@ function ReadonlyLink({
       href={href}
       onClick={(e) => {
         e.preventDefault();
-        if (href) openLink(href, slug);
+        if (href) openLink(href);
       }}
     >
       {children}

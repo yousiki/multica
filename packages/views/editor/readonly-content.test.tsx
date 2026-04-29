@@ -27,9 +27,8 @@ vi.mock("./link-hover-card", () => ({
   LinkHoverCard: () => null,
 }));
 
-vi.mock("./utils/link-handler", () => ({
-  openLink: vi.fn(),
-  isMentionHref: (href?: string) => Boolean(href?.startsWith("mention://")),
+vi.mock("./utils/use-open-link", () => ({
+  useOpenLink: () => vi.fn(),
 }));
 
 import { ReadonlyContent } from "./readonly-content";

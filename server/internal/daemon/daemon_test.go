@@ -337,6 +337,7 @@ func newRepoReadyTestDaemon(t *testing.T, handler http.HandlerFunc) *Daemon {
 		logger:       slog.Default(),
 		workspaces:   make(map[string]*workspaceState),
 		runtimeIndex: make(map[string]Runtime),
+		taskRepos:    make(map[string]map[string]map[string]struct{}),
 	}
 }
 
@@ -556,7 +557,7 @@ func TestEnsureRepoReadyFastPathDoesNotRefresh(t *testing.T) {
 	}
 	d.workspaces["ws-1"] = newWorkspaceState("ws-1", nil, "v1", []RepoData{{URL: sourceRepo}})
 
-	if err := d.ensureRepoReady(context.Background(), "ws-1", sourceRepo); err != nil {
+	if err := d.ensureRepoReady(context.Background(), "ws-1", "", sourceRepo); err != nil {
 		t.Fatalf("ensureRepoReady: %v", err)
 	}
 	if got := refreshCalls.Load(); got != 0 {
@@ -579,7 +580,7 @@ func TestEnsureRepoReadyTrimsURL(t *testing.T) {
 	d.workspaces["ws-1"] = newWorkspaceState("ws-1", nil, "v1", []RepoData{{URL: sourceRepo}})
 
 	// URL with trailing whitespace should still hit the fast path.
-	if err := d.ensureRepoReady(context.Background(), "ws-1", "  "+sourceRepo+"  "); err != nil {
+	if err := d.ensureRepoReady(context.Background(), "ws-1", "", "  "+sourceRepo+"  "); err != nil {
 		t.Fatalf("ensureRepoReady with padded URL: %v", err)
 	}
 	if got := refreshCalls.Load(); got != 0 {
@@ -606,7 +607,7 @@ func TestEnsureRepoReadyRefreshesOnMiss(t *testing.T) {
 	})
 	d.workspaces["ws-1"] = newWorkspaceState("ws-1", nil, "", nil)
 
-	if err := d.ensureRepoReady(context.Background(), "ws-1", sourceRepo); err != nil {
+	if err := d.ensureRepoReady(context.Background(), "ws-1", "", sourceRepo); err != nil {
 		t.Fatalf("ensureRepoReady: %v", err)
 	}
 	if got := refreshCalls.Load(); got != 1 {
@@ -629,7 +630,7 @@ func TestEnsureRepoReadyReturnsNotConfigured(t *testing.T) {
 	})
 	d.workspaces["ws-1"] = newWorkspaceState("ws-1", nil, "", nil)
 
-	err := d.ensureRepoReady(context.Background(), "ws-1", "git@example.com:team/api.git")
+	err := d.ensureRepoReady(context.Background(), "ws-1", "", "git@example.com:team/api.git")
 	if !errors.Is(err, ErrRepoNotConfigured) {
 		t.Fatalf("expected ErrRepoNotConfigured, got %v", err)
 	}
@@ -648,7 +649,7 @@ func TestEnsureRepoReadyReportsSyncFailure(t *testing.T) {
 	})
 	d.workspaces["ws-1"] = newWorkspaceState("ws-1", nil, "", nil)
 
-	err := d.ensureRepoReady(context.Background(), "ws-1", missingRepo)
+	err := d.ensureRepoReady(context.Background(), "ws-1", "", missingRepo)
 	if err == nil || !strings.Contains(err.Error(), "repo is configured but not synced:") {
 		t.Fatalf("expected sync failure error, got %v", err)
 	}
@@ -683,7 +684,7 @@ func TestEnsureRepoReadyConcurrentMissRefreshesOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errCh <- d.ensureRepoReady(context.Background(), "ws-1", sourceRepo)
+			errCh <- d.ensureRepoReady(context.Background(), "ws-1", "", sourceRepo)
 		}()
 	}
 	wg.Wait()
@@ -698,5 +699,95 @@ func TestEnsureRepoReadyConcurrentMissRefreshesOnce(t *testing.T) {
 	// must serialize them so the server is only called once.
 	if got := refreshCalls.Load(); got != 1 {
 		t.Fatalf("expected exactly 1 refresh call, got %d", got)
+	}
+}
+
+// TestEnsureRepoReady_TaskRepoAuthorizesAndSyncs is the regression for the
+// re-review finding (parent issue YOU-17): the server now passes
+// `workspace ∪ project` as `task.Repos`, but `multica repo checkout
+// <project-url>` was bouncing off `workspaceRepoAllowed` because the daemon
+// only knew the workspace allowlist. After registerTaskRepos runs, the URL
+// must authorize against the per-task set AND the bare clone must already be
+// synced (so the checkout doesn't trigger a workspace-repos refresh).
+func TestEnsureRepoReady_TaskRepoAuthorizesAndSyncs(t *testing.T) {
+	t.Parallel()
+
+	projectRepo := createDaemonTestRepo(t)
+	var refreshCalls atomic.Int32
+	d := newRepoReadyTestDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+		// The task-scoped path must NOT hit the workspace-repos refresh —
+		// project-only URLs aren't in that response and a refresh would
+		// flip them to "not configured".
+		refreshCalls.Add(1)
+		http.Error(w, "unexpected refresh", http.StatusInternalServerError)
+	})
+
+	// Workspace exists but lists no repos at workspace scope.
+	d.workspaces["ws-1"] = newWorkspaceState("ws-1", nil, "v1", nil)
+
+	// Server-side claim resolved a project-bound repo into task.Repos. The
+	// daemon's runTask normally calls registerTaskRepos for us; this test
+	// invokes it directly to avoid spinning up the full task pipeline.
+	d.registerTaskRepos("ws-1", "task-1", []RepoData{{URL: projectRepo}})
+	t.Cleanup(func() { d.unregisterTaskRepos("ws-1", "task-1") })
+
+	if err := d.ensureRepoReady(context.Background(), "ws-1", "task-1", projectRepo); err != nil {
+		t.Fatalf("ensureRepoReady (task-attached project repo): %v", err)
+	}
+	if got := refreshCalls.Load(); got != 0 {
+		t.Fatalf("expected zero refresh calls (task-scoped fast path), got %d", got)
+	}
+	if d.repoCache.Lookup("ws-1", projectRepo) == "" {
+		t.Fatal("expected project repo to be cached after registerTaskRepos sync")
+	}
+
+	// Without a task ID the same URL must fall through to the workspace
+	// allowlist, which doesn't have it → ErrRepoNotConfigured. This ensures
+	// the per-task grant is scoped, not a global side-effect.
+	d.unregisterTaskRepos("ws-1", "task-1")
+	noopHandler := func(w http.ResponseWriter, r *http.Request) {
+		// Empty workspace repos response — keeps the refresh fast and
+		// confirms project URL is no longer authorized.
+		json.NewEncoder(w).Encode(WorkspaceReposResponse{
+			WorkspaceID: "ws-1", Repos: []RepoData{}, ReposVersion: "v1",
+		})
+	}
+	d.client = NewClient(httptest.NewServer(http.HandlerFunc(noopHandler)).URL)
+	if err := d.ensureRepoReady(context.Background(), "ws-1", "", projectRepo); !errors.Is(err, ErrRepoNotConfigured) {
+		t.Fatalf("after unregister, expected ErrRepoNotConfigured, got %v", err)
+	}
+}
+
+// TestRegisterTaskRepos_PerTaskIsolation pins the contract that two
+// concurrent tasks in the same workspace can hold independent project-scope
+// grants without leaking into each other.
+func TestRegisterTaskRepos_PerTaskIsolation(t *testing.T) {
+	t.Parallel()
+
+	d := newRepoReadyTestDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+	d.workspaces["ws-1"] = newWorkspaceState("ws-1", nil, "v1", nil)
+
+	d.registerTaskRepos("ws-1", "task-A", []RepoData{{URL: "repo-a"}})
+	d.registerTaskRepos("ws-1", "task-B", []RepoData{{URL: "repo-b"}})
+
+	if !d.taskRepoAllowed("ws-1", "task-A", "repo-a") {
+		t.Fatal("task-A should authorize repo-a")
+	}
+	if d.taskRepoAllowed("ws-1", "task-A", "repo-b") {
+		t.Fatal("task-A should NOT authorize repo-b (registered under task-B)")
+	}
+	if !d.taskRepoAllowed("ws-1", "task-B", "repo-b") {
+		t.Fatal("task-B should authorize repo-b")
+	}
+
+	// Tearing down task-A must not affect task-B's grants.
+	d.unregisterTaskRepos("ws-1", "task-A")
+	if d.taskRepoAllowed("ws-1", "task-A", "repo-a") {
+		t.Fatal("task-A grant should be gone after unregister")
+	}
+	if !d.taskRepoAllowed("ws-1", "task-B", "repo-b") {
+		t.Fatal("task-B grant must survive task-A's unregister")
 	}
 }

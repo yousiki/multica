@@ -64,10 +64,10 @@ selfhost: ## Create .env if needed, then pull and start the official self-hosted
 		fi; \
 		echo "==> Generated random JWT_SECRET"; \
 	fi
-	@echo "==> Pulling official Multica images..."
+	@echo "==> Pulling Multica fork images from GHCR..."
 	@if ! docker compose -f docker-compose.selfhost.yml pull; then \
 		echo ""; \
-		echo "Official images for tag '$${MULTICA_IMAGE_TAG:-latest}' are not published yet."; \
+		echo "Fork images for tag '$${MULTICA_IMAGE_TAG:-latest}' are not published yet at $${MULTICA_BACKEND_IMAGE:-ghcr.io/yousiki/multica-backend}."; \
 		echo "If this is before the first GHCR release, build from the current checkout:"; \
 		echo "  make selfhost-build"; \
 		exit 1; \
@@ -87,8 +87,8 @@ selfhost: ## Create .env if needed, then pull and start the official self-hosted
 		echo "  Frontend: http://localhost:$${FRONTEND_PORT:-3000}"; \
 		echo "  Backend:  http://localhost:$${PORT:-8080}"; \
 		echo ""; \
-		echo "Images: $${MULTICA_BACKEND_IMAGE:-ghcr.io/multica-ai/multica-backend}:$${MULTICA_IMAGE_TAG:-latest}"; \
-		echo "        $${MULTICA_WEB_IMAGE:-ghcr.io/multica-ai/multica-web}:$${MULTICA_IMAGE_TAG:-latest}"; \
+		echo "Images: $${MULTICA_BACKEND_IMAGE:-ghcr.io/yousiki/multica-backend}:$${MULTICA_IMAGE_TAG:-latest}"; \
+		echo "        $${MULTICA_WEB_IMAGE:-ghcr.io/yousiki/multica-web}:$${MULTICA_IMAGE_TAG:-latest}"; \
 		echo ""; \
 		echo "Log in: configure RESEND_API_KEY in .env for email codes,"; \
 		echo "        or read the generated code from backend logs when Resend is unset."; \

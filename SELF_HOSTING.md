@@ -22,12 +22,24 @@ git clone https://github.com/yousiki/multica.git
 cd multica
 make selfhost
 
-# 2. Install the CLI, then configure it, authenticate, and start the daemon
-brew install multica-ai/tap/multica
+# 2. Install the CLI (pick one for your platform — see below), then configure it
 multica setup self-host
 ```
 
-`make selfhost` creates `.env` from the example, generates a random `JWT_SECRET`, and pulls `ghcr.io/yousiki/multica-backend:latest` + `ghcr.io/yousiki/multica-web:latest`. The CLI itself still ships from the upstream Homebrew tap because the wire protocol is shared.
+CLI install options (the binary itself is shared with upstream — protocol is the same, so you can use any of these regardless of which backend you point at):
+
+```bash
+# macOS / Linux — Homebrew
+brew install multica-ai/tap/multica
+
+# macOS / Linux — install script (no Homebrew required)
+curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash
+
+# Windows — PowerShell
+irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex
+```
+
+`make selfhost` creates `.env` from the example, generates a random `JWT_SECRET`, and pulls `ghcr.io/yousiki/multica-backend:latest` + `ghcr.io/yousiki/multica-web:latest`.
 
 Open http://localhost:3000. To log in, configure `RESEND_API_KEY` in `.env` for email-based codes (recommended), or leave Resend unset and copy the generated code from the backend logs. See [Step 2 — Log In](#step-2--log-in) for details.
 

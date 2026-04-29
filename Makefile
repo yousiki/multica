@@ -67,7 +67,7 @@ selfhost: ## Create .env if needed, then pull and start the official self-hosted
 	@echo "==> Pulling Multica fork images from GHCR..."
 	@if ! docker compose -f docker-compose.selfhost.yml pull; then \
 		echo ""; \
-		echo "Official images for tag '$${MULTICA_IMAGE_TAG:-latest}' are not published yet."; \
+		echo "Fork images for tag '$${MULTICA_IMAGE_TAG:-latest}' are not published yet at $${MULTICA_BACKEND_IMAGE:-ghcr.io/yousiki/multica-backend}."; \
 		echo "If this is before the first GHCR release, build from the current checkout:"; \
 		echo "  make selfhost-build"; \
 		exit 1; \

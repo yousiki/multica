@@ -1562,6 +1562,19 @@ func (h *Handler) DeleteIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Drop the issue's repo bindings, then GC any repo rows nothing else
+	// references. Mirrors the workspace (Step 1) and project (Step 2) cleanup
+	// hooks — application-level rather than FK-level because
+	// repo_binding.scope_id is polymorphic across workspace / project / issue.
+	if err := h.Queries.DeleteRepoBindingsForScope(r.Context(), db.DeleteRepoBindingsForScopeParams{
+		ScopeType: repoScopeIssue,
+		ScopeID:   issue.ID,
+	}); err != nil {
+		slog.Warn("delete issue repo bindings failed", "error", err, "issue_id", uuidToString(issue.ID))
+	} else if err := h.Queries.DeleteOrphanRepos(r.Context()); err != nil {
+		slog.Warn("delete orphan repos failed", "error", err, "issue_id", uuidToString(issue.ID))
+	}
+
 	h.deleteS3Objects(r.Context(), attachmentURLs)
 	userID := requestUserID(r)
 	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))

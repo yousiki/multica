@@ -43,6 +43,7 @@ import { ProjectPicker } from "../../projects/components/project-picker";
 import { CommentCard } from "./comment-card";
 import { CommentInput } from "./comment-input";
 import { AgentLiveCard, TaskRunHistory } from "./agent-live-card";
+import { IssueReposSection } from "./issue-repos-section";
 import { useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "@multica/core/auth";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
@@ -158,6 +159,12 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
   const wsId = useWorkspaceId();
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
+  // Repo-binding edits gated to admin/owner. Same shape the project sidebar
+  // uses — an issue-scope binding expands the operational surface an agent
+  // sees, so it stays an elevated-role action.
+  const currentMember = members.find((m) => m.user_id === user?.id) ?? null;
+  const canManageIssueRepos =
+    currentMember?.role === "owner" || currentMember?.role === "admin";
   const { data: allIssues = [] } = useQuery(issueListOptions(wsId));
   const { getActorName } = useActorName();
   const { uploadWithToast } = useFileUpload(api);
@@ -392,6 +399,12 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
           </PropRow>
         </div>}
       </div>
+
+      {/* Repositories — issue-scope bindings (Step 3 of MUL-14). Edits gated
+          to admin/owner — same gate the workspace + project sidebars use,
+          since adding a repo at issue scope expands the operational surface
+          an agent will see. */}
+      <IssueReposSection issueId={issue.id} canEdit={canManageIssueRepos} />
 
       {/* Parent issue */}
       {parentIssue && (

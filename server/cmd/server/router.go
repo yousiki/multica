@@ -309,6 +309,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/labels", h.ListLabelsForIssue)
 					r.Post("/labels", h.AttachLabel)
 					r.Delete("/labels/{labelId}", h.DetachLabel)
+					// Issue-scope repo bindings (Step 3 of MUL-14). Reads
+					// open to any workspace member; writes gated to
+					// owner/admin to match the project-scope flow.
+					// DELETE accepts the repo on the path when it's a UUID
+					// and via `?url=` when it's a git URL — same shape as
+					// /api/projects/:id/repos because git URLs collide with
+					// chi's segment separator on percent-decoded `/`.
+					r.Get("/repos", h.ListIssueRepos)
+					r.Group(func(r chi.Router) {
+						r.Use(middleware.RequireWorkspaceRole(queries, "owner", "admin"))
+						r.Post("/repos", h.CreateIssueRepo)
+						r.Delete("/repos", h.DeleteIssueRepo)
+						r.Delete("/repos/{repoId}", h.DeleteIssueRepo)
+					})
 				})
 			})
 

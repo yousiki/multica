@@ -54,6 +54,7 @@ export type WSEventType =
   | "project:updated"
   | "project:deleted"
   | "project_repos:updated"
+  | "issue_repos:updated"
   | "label:created"
   | "label:updated"
   | "label:deleted"

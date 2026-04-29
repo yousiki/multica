@@ -1092,6 +1092,36 @@ export class ApiClient {
     await this.fetch(path, { method: "DELETE" });
   }
 
+  // Issue repos (Step 3 of MUL-14: issue-scope repo binding).
+  async listIssueRepos(issueId: string): Promise<{ repos: WorkspaceRepo[] }> {
+    return this.fetch(`/api/issues/${issueId}/repos`);
+  }
+
+  async addIssueRepo(
+    issueId: string,
+    data: { url: string; description?: string },
+  ): Promise<{ repo: WorkspaceRepo; repos: WorkspaceRepo[] }> {
+    return this.fetch(`/api/issues/${issueId}/repos`, {
+      method: "POST",
+      body: JSON.stringify({ url: data.url, description: data.description ?? "" }),
+    });
+  }
+
+  // Same dual-input shape as removeProjectRepo: UUID → path, git URL → ?url=.
+  async removeIssueRepo(issueId: string, urlOrRepoId: string): Promise<void> {
+    const trimmed = urlOrRepoId.trim();
+    const isUUID =
+      trimmed.length === 36 &&
+      trimmed[8] === "-" &&
+      trimmed[13] === "-" &&
+      trimmed[18] === "-" &&
+      trimmed[23] === "-";
+    const path = isUUID
+      ? `/api/issues/${issueId}/repos/${encodeURIComponent(trimmed)}`
+      : `/api/issues/${issueId}/repos?url=${encodeURIComponent(trimmed)}`;
+    await this.fetch(path, { method: "DELETE" });
+  }
+
   // Labels
   async listLabels(): Promise<ListLabelsResponse> {
     return this.fetch(`/api/labels`);

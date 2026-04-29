@@ -49,6 +49,7 @@
     "./projects": "./projects/index.ts",
     "./projects/queries": "./projects/queries.ts",
     "./projects/mutations": "./projects/mutations.ts",
+    "./projects/repo-queries": "./projects/repo-queries.ts",
     "./projects/config": "./projects/config.ts",
     "./labels": "./labels/index.ts",
     "./labels/queries": "./labels/queries.ts",

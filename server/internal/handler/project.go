@@ -326,6 +326,20 @@ func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete project")
 		return
 	}
+
+	// Drop the project's repo bindings, then garbage-collect any repo rows
+	// that no scope references anymore. Mirrors the workspace cleanup added
+	// in Step 1 — application-level rather than FK-level because
+	// repo_binding.scope_id is polymorphic across workspace / project / issue.
+	if err := h.Queries.DeleteRepoBindingsForScope(r.Context(), db.DeleteRepoBindingsForScopeParams{
+		ScopeType: repoScopeProject,
+		ScopeID:   project.ID,
+	}); err != nil {
+		slog.Warn("delete project repo bindings failed", "error", err, "project_id", uuidToString(project.ID))
+	} else if err := h.Queries.DeleteOrphanRepos(r.Context()); err != nil {
+		slog.Warn("delete orphan repos failed", "error", err, "project_id", uuidToString(project.ID))
+	}
+
 	h.publish(protocol.EventProjectDeleted, workspaceID, "member", userID, map[string]any{"project_id": uuidToString(project.ID)})
 	w.WriteHeader(http.StatusNoContent)
 }

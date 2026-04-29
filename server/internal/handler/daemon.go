@@ -762,7 +762,10 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	if task.IssueID.Valid {
 		if issue, err := h.Queries.GetIssue(r.Context(), task.IssueID); err == nil {
 			resp.WorkspaceID = uuidToString(issue.WorkspaceID)
-			if repos, err := h.loadWorkspaceRepoData(r.Context(), issue.WorkspaceID); err == nil && len(repos) > 0 {
+			// Resolve the union of workspace + project bindings (Step 2). When
+			// the issue's project is unset only the workspace scope contributes,
+			// so this matches the pre-Step-2 behavior for project-less issues.
+			if repos, err := h.loadOperationalReposForIssue(r.Context(), issue); err == nil && len(repos) > 0 {
 				resp.Repos = repos
 			}
 		}
@@ -814,7 +817,14 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		if cs, err := h.Queries.GetChatSession(r.Context(), task.ChatSessionID); err == nil {
 			resp.WorkspaceID = uuidToString(cs.WorkspaceID)
 			resp.ChatSessionID = uuidToString(cs.ID)
-			if repos, err := h.loadWorkspaceRepoData(r.Context(), cs.WorkspaceID); err == nil && len(repos) > 0 {
+			// Chat sessions are workspace-scoped (no project link), so the
+			// union collapses to the workspace scope. Routing through
+			// loadOperationalRepos still keeps the call shape uniform across
+			// claim sites and gives Step 3 a single edit point when issue
+			// scope is added.
+			if repos, err := h.loadOperationalRepos(r.Context(), []scopeKey{
+				{Type: repoScopeWorkspace, ID: cs.WorkspaceID},
+			}); err == nil && len(repos) > 0 {
 				resp.Repos = repos
 			}
 			// Resume from the chat session's persistent session, falling back
@@ -869,7 +879,12 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 					resp.WorkspaceID = uuidToString(ap.WorkspaceID)
 				}
 				if len(resp.Repos) == 0 {
-					if repos, err := h.loadWorkspaceRepoData(r.Context(), ap.WorkspaceID); err == nil && len(repos) > 0 {
+					// Autopilot rows live at workspace scope; routing through
+					// loadOperationalRepos keeps the call shape uniform across
+					// claim sites.
+					if repos, err := h.loadOperationalRepos(r.Context(), []scopeKey{
+						{Type: repoScopeWorkspace, ID: ap.WorkspaceID},
+					}); err == nil && len(repos) > 0 {
 						resp.Repos = repos
 					}
 				}

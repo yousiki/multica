@@ -64,9 +64,10 @@ const (
 	EventChatSessionRead = "chat:session_read"
 
 	// Project events
-	EventProjectCreated = "project:created"
-	EventProjectUpdated = "project:updated"
-	EventProjectDeleted = "project:deleted"
+	EventProjectCreated      = "project:created"
+	EventProjectUpdated      = "project:updated"
+	EventProjectDeleted      = "project:deleted"
+	EventProjectReposUpdated = "project_repos:updated"
 
 	// Label events
 	EventLabelCreated       = "label:created"

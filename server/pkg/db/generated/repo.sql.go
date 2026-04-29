@@ -85,6 +85,39 @@ func (q *Queries) DeleteRepoBinding(ctx context.Context, arg DeleteRepoBindingPa
 	return err
 }
 
+const deleteRepoBindingIfExists = `-- name: DeleteRepoBindingIfExists :one
+DELETE FROM repo_binding
+WHERE repo_id    = $1
+  AND scope_type = $2
+  AND scope_id   = $3
+RETURNING id, repo_id, scope_type, scope_id, description, created_at
+`
+
+type DeleteRepoBindingIfExistsParams struct {
+	RepoID    pgtype.UUID `json:"repo_id"`
+	ScopeType string      `json:"scope_type"`
+	ScopeID   pgtype.UUID `json:"scope_id"`
+}
+
+// Returns the deleted row so the caller can distinguish "nothing matched on
+// this scope" (zero rows → 404) from "deleted successfully" (one row → 204).
+// The plain `:exec` variant above keeps existing call sites working and
+// silently no-ops for the wipe-and-replace path; per-binding REST handlers
+// need the existence proof.
+func (q *Queries) DeleteRepoBindingIfExists(ctx context.Context, arg DeleteRepoBindingIfExistsParams) (RepoBinding, error) {
+	row := q.db.QueryRow(ctx, deleteRepoBindingIfExists, arg.RepoID, arg.ScopeType, arg.ScopeID)
+	var i RepoBinding
+	err := row.Scan(
+		&i.ID,
+		&i.RepoID,
+		&i.ScopeType,
+		&i.ScopeID,
+		&i.Description,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const deleteRepoBindingsForScope = `-- name: DeleteRepoBindingsForScope :exec
 DELETE FROM repo_binding
 WHERE scope_type = $1
@@ -171,6 +204,75 @@ func (q *Queries) ListReposByScope(ctx context.Context, arg ListReposByScopePara
 			&i.ID,
 			&i.Url,
 			&i.Description,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReposByScopes = `-- name: ListReposByScopes :many
+SELECT r.id,
+       r.url,
+       rb.description,
+       rb.scope_type,
+       rb.scope_id,
+       r.created_at,
+       r.updated_at
+FROM repo r
+JOIN repo_binding rb ON rb.repo_id = r.id
+JOIN (
+    SELECT ($1::text[])[i]   AS scope_type,
+           ($2::uuid[])[i]     AS scope_id
+    FROM generate_subscripts($1::text[], 1) AS i
+) AS s
+  ON s.scope_type = rb.scope_type
+ AND s.scope_id   = rb.scope_id
+ORDER BY r.url ASC
+`
+
+type ListReposByScopesParams struct {
+	ScopeTypes []string      `json:"scope_types"`
+	ScopeIds   []pgtype.UUID `json:"scope_ids"`
+}
+
+type ListReposByScopesRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	Url         string             `json:"url"`
+	Description string             `json:"description"`
+	ScopeType   string             `json:"scope_type"`
+	ScopeID     pgtype.UUID        `json:"scope_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+// Resolves the union of repo bindings across an arbitrary list of scope keys
+// in a single round trip. The two arrays are expected to have equal length and
+// are zipped pairwise (sqlc.arg(scope_types)[i] ↔ sqlc.arg(scope_ids)[i]) using
+// generate_subscripts. The scope_type column is also included on the row so the
+// caller can resolve precedence collisions ("issue > project > workspace") for
+// the same URL without a second query.
+func (q *Queries) ListReposByScopes(ctx context.Context, arg ListReposByScopesParams) ([]ListReposByScopesRow, error) {
+	rows, err := q.db.Query(ctx, listReposByScopes, arg.ScopeTypes, arg.ScopeIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListReposByScopesRow{}
+	for rows.Next() {
+		var i ListReposByScopesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Url,
+			&i.Description,
+			&i.ScopeType,
+			&i.ScopeID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {

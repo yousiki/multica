@@ -25,6 +25,31 @@ WHERE rb.scope_type = $1
   AND rb.scope_id   = $2
 ORDER BY r.url ASC;
 
+-- name: ListReposByScopes :many
+-- Resolves the union of repo bindings across an arbitrary list of scope keys
+-- in a single round trip. The two arrays are expected to have equal length and
+-- are zipped pairwise (sqlc.arg(scope_types)[i] ↔ sqlc.arg(scope_ids)[i]) using
+-- generate_subscripts. The scope_type column is also included on the row so the
+-- caller can resolve precedence collisions ("issue > project > workspace") for
+-- the same URL without a second query.
+SELECT r.id,
+       r.url,
+       rb.description,
+       rb.scope_type,
+       rb.scope_id,
+       r.created_at,
+       r.updated_at
+FROM repo r
+JOIN repo_binding rb ON rb.repo_id = r.id
+JOIN (
+    SELECT (sqlc.arg(scope_types)::text[])[i]   AS scope_type,
+           (sqlc.arg(scope_ids)::uuid[])[i]     AS scope_id
+    FROM generate_subscripts(sqlc.arg(scope_types)::text[], 1) AS i
+) AS s
+  ON s.scope_type = rb.scope_type
+ AND s.scope_id   = rb.scope_id
+ORDER BY r.url ASC;
+
 -- name: CreateRepoBinding :one
 -- ON CONFLICT updates description (and bumps no other column) so calling this
 -- twice with different descriptions is the way a caller mutates an existing
@@ -41,6 +66,18 @@ DELETE FROM repo_binding
 WHERE repo_id    = $1
   AND scope_type = $2
   AND scope_id   = $3;
+
+-- name: DeleteRepoBindingIfExists :one
+-- Returns the deleted row so the caller can distinguish "nothing matched on
+-- this scope" (zero rows → 404) from "deleted successfully" (one row → 204).
+-- The plain `:exec` variant above keeps existing call sites working and
+-- silently no-ops for the wipe-and-replace path; per-binding REST handlers
+-- need the existence proof.
+DELETE FROM repo_binding
+WHERE repo_id    = $1
+  AND scope_type = $2
+  AND scope_id   = $3
+RETURNING id, repo_id, scope_type, scope_id, description, created_at;
 
 -- name: DeleteRepoBindingsForScope :exec
 DELETE FROM repo_binding

@@ -47,6 +47,20 @@ type Daemon struct {
 	reloading    sync.Mutex         // prevents concurrent workspace syncs
 	runtimeSetCh chan struct{}      // notifies the WS wakeup loop to reconnect with a new runtime set
 
+	// taskRepos tracks the operational repo allowlist the *server* attached
+	// to each running task. Step 2 of MUL-14 made the server resolve
+	// `workspace ∪ project` and pass the union as `task.Repos`, but the
+	// daemon's `multica repo checkout` path was still gating against the
+	// workspace-only `/api/daemon/workspaces/{id}/repos` set. Per-task entries
+	// are populated in `runTask` (and Synced into the repocache so a checkout
+	// can hit a real bare clone) and torn down when the task returns.
+	//
+	// Indirection: workspaceID → taskID → URL set. Two tasks under the same
+	// workspace can hold independent project-scope grants; cleaning up one
+	// doesn't strip URLs that other concurrent tasks still need. The map is
+	// guarded by the same `mu` as workspaces / runtimeIndex.
+	taskRepos map[string]map[string]map[string]struct{}
+
 	versionsMu    sync.RWMutex      // guards agentVersions
 	agentVersions map[string]string // provider -> detected CLI version (set during registration)
 
@@ -71,6 +85,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		workspaces:    make(map[string]*workspaceState),
 		runtimeIndex:  make(map[string]Runtime),
 		runtimeSetCh:  make(chan struct{}, 1),
+		taskRepos:     make(map[string]map[string]map[string]struct{}),
 		agentVersions: make(map[string]string),
 	}
 }
@@ -310,6 +325,89 @@ func (d *Daemon) workspaceRepoAllowed(workspaceID, repoURL string) bool {
 	return allowed
 }
 
+// registerTaskRepos records the operational repo set the server attached to a
+// claimed task and pre-warms the bare cache so the agent's later
+// `multica repo checkout <url>` doesn't have to wait on a clone. Without this,
+// project-scope URLs make it into the agent prompt but bounce off
+// `workspaceRepoAllowed` because that allowlist only sees the workspace-only
+// `/api/daemon/workspaces/{id}/repos` set.
+//
+// Idempotent — re-registering an existing (workspaceID, taskID) replaces the
+// URL set, so any in-flight refresh always lands the latest allowlist.
+func (d *Daemon) registerTaskRepos(workspaceID, taskID string, repos []RepoData) {
+	if workspaceID == "" || taskID == "" || len(repos) == 0 {
+		return
+	}
+	urls := make(map[string]struct{}, len(repos))
+	for _, r := range repos {
+		url := strings.TrimSpace(r.URL)
+		if url == "" {
+			continue
+		}
+		urls[url] = struct{}{}
+	}
+	if len(urls) == 0 {
+		return
+	}
+
+	d.mu.Lock()
+	if d.taskRepos[workspaceID] == nil {
+		d.taskRepos[workspaceID] = make(map[string]map[string]struct{})
+	}
+	d.taskRepos[workspaceID][taskID] = urls
+	d.mu.Unlock()
+
+	// Sync project-scope repos into the same workspace cache directory.
+	// `repocache.Sync` is additive — it never deletes existing bare clones —
+	// so the workspace's own repos that periodic refreshes have already
+	// cached stay put. The Sync runs synchronously here because a checkout
+	// that fires before the bare clone exists would error with "configured
+	// but not synced", which is harder to reason about than a slow start.
+	if d.repoCache != nil {
+		d.syncWorkspaceRepos(workspaceID, repos)
+	}
+}
+
+// unregisterTaskRepos drops the per-task operational allowlist when a task
+// returns. The bare clones stay on disk — the next task may need them and
+// re-cloning is expensive — but the URL is no longer authorized for any
+// future checkout under this task ID.
+func (d *Daemon) unregisterTaskRepos(workspaceID, taskID string) {
+	if workspaceID == "" || taskID == "" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if byTask, ok := d.taskRepos[workspaceID]; ok {
+		delete(byTask, taskID)
+		if len(byTask) == 0 {
+			delete(d.taskRepos, workspaceID)
+		}
+	}
+}
+
+// taskRepoAllowed checks whether `repoURL` is part of the operational set the
+// server attached to `taskID` under `workspaceID`. Returns false when the task
+// is unknown or the URL isn't registered — a clean fall-through to the
+// workspace-allowlist path.
+func (d *Daemon) taskRepoAllowed(workspaceID, taskID, repoURL string) bool {
+	if workspaceID == "" || taskID == "" || repoURL == "" {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	byTask, ok := d.taskRepos[workspaceID]
+	if !ok {
+		return false
+	}
+	urls, ok := byTask[taskID]
+	if !ok {
+		return false
+	}
+	_, allowed := urls[repoURL]
+	return allowed
+}
+
 func (d *Daemon) workspaceLastRepoSyncErr(workspaceID string) string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -351,7 +449,16 @@ func (d *Daemon) refreshWorkspaceRepos(ctx context.Context, workspaceID string) 
 	return resp, nil
 }
 
-func (d *Daemon) ensureRepoReady(ctx context.Context, workspaceID, repoURL string) error {
+// ensureRepoReady authorizes a `multica repo checkout <repoURL>` request and
+// makes sure a bare clone exists locally. The taskID — passed by the agent
+// via the daemon's `/repo/checkout` body — augments the workspace allowlist
+// with whatever the server attached to that specific task (project-scope
+// repos under MUL-14 Step 2; issue-scope under Step 3). If the task is
+// unknown or doesn't list the URL, we fall back to refreshing the
+// workspace's repo list — which keeps the legacy "agent invokes outside a
+// task" path working (rare, but used by `multica` invocations the user runs
+// manually inside a daemon-spawned shell).
+func (d *Daemon) ensureRepoReady(ctx context.Context, workspaceID, taskID, repoURL string) error {
 	if d.repoCache == nil {
 		return fmt.Errorf("repo cache not initialized")
 	}
@@ -365,15 +472,39 @@ func (d *Daemon) ensureRepoReady(ctx context.Context, workspaceID, repoURL strin
 		return fmt.Errorf("workspace is not watched by this daemon: %s", workspaceID)
 	}
 
-	if d.workspaceRepoAllowed(workspaceID, repoURL) && d.repoCache.Lookup(workspaceID, repoURL) != "" {
+	// Task-attached repos (workspace ∪ project ∪ issue, per the task's
+	// operational set) get the same fast path as workspace-allowlisted ones:
+	// already authorized AND already synced → done. The taskID branch checks
+	// first because the bare clone was Synced when registerTaskRepos ran, so
+	// `Lookup` returning non-empty is the common case.
+	allowed := func() bool {
+		return d.taskRepoAllowed(workspaceID, taskID, repoURL) ||
+			d.workspaceRepoAllowed(workspaceID, repoURL)
+	}
+
+	if allowed() && d.repoCache.Lookup(workspaceID, repoURL) != "" {
 		return nil
 	}
 
 	ws.repoRefreshMu.Lock()
 	defer ws.repoRefreshMu.Unlock()
 
-	if d.workspaceRepoAllowed(workspaceID, repoURL) && d.repoCache.Lookup(workspaceID, repoURL) != "" {
+	if allowed() && d.repoCache.Lookup(workspaceID, repoURL) != "" {
 		return nil
+	}
+
+	// Task-attached but not yet synced (rare — registerTaskRepos already
+	// invoked Sync, but a slow clone might still be running on first task
+	// invocation). Re-running Sync here is idempotent.
+	if d.taskRepoAllowed(workspaceID, taskID, repoURL) {
+		d.syncWorkspaceRepos(workspaceID, []RepoData{{URL: repoURL}})
+		if d.repoCache.Lookup(workspaceID, repoURL) != "" {
+			return nil
+		}
+		if syncErr := d.workspaceLastRepoSyncErr(workspaceID); syncErr != "" {
+			return fmt.Errorf("repo is configured but not synced: %s", syncErr)
+		}
+		return fmt.Errorf("repo is configured but not synced")
 	}
 
 	resp, err := d.refreshWorkspaceRepos(ctx, workspaceID)
@@ -1047,6 +1178,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, taskLo
 	if task.WorkspaceID == "" {
 		return TaskResult{}, fmt.Errorf("refusing to spawn agent: task has no workspace_id (task_id=%s)", task.ID)
 	}
+
+	// Register the server-resolved operational repo set (workspace ∪ project
+	// ∪ issue) under this task ID so `multica repo checkout` from inside the
+	// agent can authorize project- / issue-scoped URLs. The unregister hook
+	// runs when the task returns — registerTaskRepos also pre-warms the bare
+	// cache so the first checkout doesn't need a clone wait.
+	d.registerTaskRepos(task.WorkspaceID, task.ID, task.Repos)
+	defer d.unregisterTaskRepos(task.WorkspaceID, task.ID)
 
 	entry, ok := d.cfg.Agents[provider]
 	if !ok {

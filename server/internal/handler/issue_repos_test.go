@@ -493,6 +493,160 @@ func TestClaimTask_IssueScopeBinding_IncludesIssueRepos(t *testing.T) {
 	}
 }
 
+// TestBatchDeleteIssues_OrphansBindings is the regression Codex flagged on
+// PR #5: the multi-select batch delete path was calling DeleteIssue directly
+// without the issue-scope repo cleanup the single-delete handler runs. Any
+// issue removed via the batch UI used to leave repo_binding rows for
+// scope_type=issue behind, and orphan repo rows would never be GC'd —
+// violating the cleanup invariant Step 3 introduced. Pinning this here
+// guarantees the two delete paths stay in sync going forward.
+func TestBatchDeleteIssues_OrphansBindings(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	mkIssue := func(title string) string {
+		w := httptest.NewRecorder()
+		req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+			"title":    title,
+			"status":   "todo",
+			"priority": "medium",
+		})
+		testHandler.CreateIssue(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("CreateIssue: %d %s", w.Code, w.Body.String())
+		}
+		var issue IssueResponse
+		json.NewDecoder(w.Body).Decode(&issue)
+		return issue.ID
+	}
+
+	idA := mkIssue("Batch delete A")
+	idB := mkIssue("Batch delete B")
+
+	const urlA = "git@example.com:team/batch-cleanup-a.git"
+	const urlB = "git@example.com:team/batch-cleanup-b.git"
+	if err := testHandler.setRepoBindingsForScope(ctx, repoScopeIssue, parseUUID(idA), []RepoData{
+		{URL: urlA, Description: "issue A only"},
+	}); err != nil {
+		t.Fatalf("seed binding A: %v", err)
+	}
+	if err := testHandler.setRepoBindingsForScope(ctx, repoScopeIssue, parseUUID(idB), []RepoData{
+		{URL: urlB, Description: "issue B only"},
+	}); err != nil {
+		t.Fatalf("seed binding B: %v", err)
+	}
+
+	// Sanity — both repo rows exist before the batch delete.
+	if _, err := testHandler.Queries.GetRepoByURL(ctx, urlA); err != nil {
+		t.Fatalf("GetRepoByURL pre-delete A: %v", err)
+	}
+	if _, err := testHandler.Queries.GetRepoByURL(ctx, urlB); err != nil {
+		t.Fatalf("GetRepoByURL pre-delete B: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/batch-delete?workspace_id="+testWorkspaceID, map[string]any{
+		"issue_ids": []string{idA, idB},
+	})
+	testHandler.BatchDeleteIssues(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("BatchDeleteIssues: %d %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Deleted int `json:"deleted"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Deleted != 2 {
+		t.Fatalf("expected 2 deleted, got %d", resp.Deleted)
+	}
+
+	// Bindings on each issue scope must be gone.
+	for _, id := range []string{idA, idB} {
+		bindings, err := testHandler.Queries.ListReposByScope(ctx, db.ListReposByScopeParams{
+			ScopeType: repoScopeIssue,
+			ScopeID:   parseUUID(id),
+		})
+		if err != nil {
+			t.Fatalf("ListReposByScope %s: %v", id, err)
+		}
+		if len(bindings) != 0 {
+			t.Fatalf("expected issue %s bindings cleared by batch delete, got %d", id, len(bindings))
+		}
+	}
+
+	// Orphan GC must have swept both catalog rows.
+	if _, err := testHandler.Queries.GetRepoByURL(ctx, urlA); err == nil {
+		t.Fatalf("expected repo %s to be GC'd after batch delete", urlA)
+	}
+	if _, err := testHandler.Queries.GetRepoByURL(ctx, urlB); err == nil {
+		t.Fatalf("expected repo %s to be GC'd after batch delete", urlB)
+	}
+}
+
+// TestBatchDeleteIssues_PreservesSharedRepoCatalog complements the test
+// above: when a URL is bound at workspace scope (or any other surviving
+// scope) AND on an issue we're deleting, the batch path must drop the
+// issue-scope binding without GC'ing the shared catalog row. That's the
+// orphan-GC predicate's contract — keep alive as long as any binding
+// references the repo.
+func TestBatchDeleteIssues_PreservesSharedRepoCatalog(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	wsUUID := parseUUID(testWorkspaceID)
+
+	t.Cleanup(func() {
+		testHandler.Queries.DeleteRepoBindingsForScope(ctx, db.DeleteRepoBindingsForScopeParams{
+			ScopeType: repoScopeWorkspace,
+			ScopeID:   wsUUID,
+		})
+		testHandler.Queries.DeleteOrphanRepos(ctx)
+	})
+
+	const shared = "git@example.com:team/shared-after-batch-delete.git"
+	if err := testHandler.setRepoBindingsForScope(ctx, repoScopeWorkspace, wsUUID, []RepoData{
+		{URL: shared, Description: "lives at workspace scope"},
+	}); err != nil {
+		t.Fatalf("seed workspace binding: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":    "Issue with overlapping repo",
+		"status":   "todo",
+		"priority": "medium",
+	})
+	testHandler.CreateIssue(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateIssue: %d %s", w.Code, w.Body.String())
+	}
+	var issue IssueResponse
+	json.NewDecoder(w.Body).Decode(&issue)
+	if err := testHandler.setRepoBindingsForScope(ctx, repoScopeIssue, parseUUID(issue.ID), []RepoData{
+		{URL: shared, Description: "issue's view"},
+	}); err != nil {
+		t.Fatalf("seed issue binding: %v", err)
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/issues/batch-delete?workspace_id="+testWorkspaceID, map[string]any{
+		"issue_ids": []string{issue.ID},
+	})
+	testHandler.BatchDeleteIssues(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("BatchDeleteIssues: %d %s", w.Code, w.Body.String())
+	}
+
+	// Workspace binding survives — orphan GC must keep the catalog row alive
+	// because some scope still references it.
+	if _, err := testHandler.Queries.GetRepoByURL(ctx, shared); err != nil {
+		t.Fatalf("workspace binding should survive batch delete: %v", err)
+	}
+}
+
 // TestIssueRepos_VisibilityNoLeak pins the proposal's "visibility property":
 // an issue's `repos` view must NOT include unbound workspace repos that
 // happen to be in the catalog only because some *other* issue or project

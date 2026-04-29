@@ -12,6 +12,7 @@ import { getCurrentWsId, getCurrentSlug } from "../platform/workspace-storage";
 import { issueKeys } from "../issues/queries";
 import { projectKeys } from "../projects/queries";
 import { projectRepoKeys } from "../projects/repo-queries";
+import { issueRepoKeys } from "../issues/repo-queries";
 import { pinKeys } from "../pins/queries";
 import { autopilotKeys } from "../autopilots/queries";
 import { runtimeKeys } from "../runtimes/queries";
@@ -127,6 +128,15 @@ export function useRealtimeSync(
       project_repos: () => {
         const wsId = getCurrentWsId();
         if (wsId) qc.invalidateQueries({ queryKey: projectRepoKeys.all(wsId) });
+      },
+      // `issue_repos:updated` fires from the issue-scope binding API (Step 3
+      // of MUL-14). The msg.type prefix is "issue_repos", which sits in its
+      // own bucket — it does NOT collide with the granular "issue:*"
+      // handlers below because those are listed in `specificEvents` and the
+      // generic prefix dispatcher skips anything in that set.
+      issue_repos: () => {
+        const wsId = getCurrentWsId();
+        if (wsId) qc.invalidateQueries({ queryKey: issueRepoKeys.all(wsId) });
       },
       label: () => {
         // label:created/updated/deleted — also refresh issues, since each
@@ -602,6 +612,7 @@ export function useRealtimeSync(
           qc.invalidateQueries({ queryKey: workspaceKeys.skills(wsId) });
           qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
           qc.invalidateQueries({ queryKey: projectRepoKeys.all(wsId) });
+          qc.invalidateQueries({ queryKey: issueRepoKeys.all(wsId) });
           qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
           qc.invalidateQueries({ queryKey: autopilotKeys.all(wsId) });
           qc.invalidateQueries({ queryKey: agentTaskSnapshotKeys.all(wsId) });

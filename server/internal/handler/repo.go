@@ -22,7 +22,7 @@ var (
 
 // Scope types for repo_binding.scope_type. The schema CHECK already restricts
 // values, but exposing constants here keeps callers from hand-typing a string
-// every time. `repoScopeIssue` is reserved for Step 3.
+// every time.
 const (
 	repoScopeWorkspace = "workspace"
 	repoScopeProject   = "project"
@@ -37,9 +37,9 @@ type scopeKey struct {
 }
 
 // scopePrecedence orders scope_type values for collision resolution when two
-// scopes bind the same URL. Higher value wins. Once issue-scope bindings land
-// in Step 3 the third tier slots in here without changing the rest of the
-// pipeline.
+// scopes bind the same URL. Higher value wins. Issue-scope bindings (Step 3)
+// outrank project-scope, which outrank workspace-scope, so the closer the
+// scope to the task, the more authoritative its description.
 func scopePrecedence(t string) int {
 	switch t {
 	case repoScopeIssue:
@@ -53,9 +53,8 @@ func scopePrecedence(t string) int {
 	}
 }
 
-// repoScopeIssue is reserved for Step 3 (issue-scope binding). Defined now so
-// `scopePrecedence` can reference it without forward declarations and so the
-// merge order is locked in at the helper level rather than at every caller.
+// repoScopeIssue identifies issue-level repo bindings. Step 3 of MUL-14 wires
+// these into the operational-repos union and CRUD layer.
 const repoScopeIssue = "issue"
 
 // loadRepoDataByScope returns the repos bound to (scope_type, scope_id), in
@@ -158,13 +157,17 @@ func (h *Handler) loadOperationalRepos(ctx context.Context, scopes []scopeKey) (
 }
 
 // loadOperationalReposForIssue is the convenience wrapper task-claim sites
-// use. Builds the (workspace, project?) scope list from the issue and forwards
-// to loadOperationalRepos. The issue scope is reserved for Step 3.
+// use. Builds the (workspace, project?, issue) scope list and forwards to
+// loadOperationalRepos. The issue scope is always appended — when the issue
+// has no bindings of its own the helper returns the same shape as before, but
+// adding it unconditionally keeps the precedence ladder honest (an
+// issue-scope binding always wins over project / workspace for that URL).
 func (h *Handler) loadOperationalReposForIssue(ctx context.Context, issue db.Issue) ([]RepoData, error) {
 	scopes := []scopeKey{{Type: repoScopeWorkspace, ID: issue.WorkspaceID}}
 	if issue.ProjectID.Valid {
 		scopes = append(scopes, scopeKey{Type: repoScopeProject, ID: issue.ProjectID})
 	}
+	scopes = append(scopes, scopeKey{Type: repoScopeIssue, ID: issue.ID})
 	return h.loadOperationalRepos(ctx, scopes)
 }
 

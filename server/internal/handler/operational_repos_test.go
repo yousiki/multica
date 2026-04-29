@@ -9,11 +9,12 @@ import (
 )
 
 // TestLoadOperationalRepos_UnionSemantics pins the union behaviour Step 2
-// adds — `operational = workspace ∪ project` — across the four cardinality
-// shapes Step 3 will reuse: workspace-only, project-only, both-overlapping,
-// and neither. The collision case is the key one: when the same git URL is
+// added — `operational = workspace ∪ project` — across the four cardinality
+// shapes Step 3 reuses: workspace-only, project-only, both-overlapping, and
+// neither. The collision case is the key one: when the same git URL is
 // bound at both workspace and project scope, the project description wins
-// because project is the closer scope.
+// because project is the closer scope. Step 3 extends this with an
+// issue-scope tier on top — see TestLoadOperationalRepos_IssueScopeUnion.
 func TestLoadOperationalRepos_UnionSemantics(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -113,6 +114,133 @@ func TestLoadOperationalRepos_UnionSemantics(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestLoadOperationalRepos_IssueScopeUnion exercises Step 3's full three-tier
+// union — `operational = workspace ∪ project ∪ issue`, deduped by URL — with
+// the issue tier outranking project, which outranks workspace. The same URL
+// appears at every scope here so the precedence ladder is the *only* thing
+// that decides which description survives the resolver. The test seeds and
+// reads the bindings end to end (no helper-level shortcuts) to mirror what a
+// task claim actually walks through.
+func TestLoadOperationalRepos_IssueScopeUnion(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	wsUUID := parseUUID(testWorkspaceID)
+	projectA := parseUUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+	issueA := parseUUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+
+	t.Cleanup(func() {
+		for _, scope := range []db.DeleteRepoBindingsForScopeParams{
+			{ScopeType: repoScopeWorkspace, ScopeID: wsUUID},
+			{ScopeType: repoScopeProject, ScopeID: projectA},
+			{ScopeType: repoScopeIssue, ScopeID: issueA},
+		} {
+			testHandler.Queries.DeleteRepoBindingsForScope(ctx, scope)
+		}
+		testHandler.Queries.DeleteOrphanRepos(ctx)
+	})
+
+	wsOnly := "git@example.com:team/issue-union-ws-only.git"
+	projOnly := "git@example.com:team/issue-union-proj-only.git"
+	issueOnly := "git@example.com:team/issue-union-issue-only.git"
+	overlap := "git@example.com:team/issue-union-overlap.git"
+
+	if err := testHandler.setRepoBindingsForScope(ctx, repoScopeWorkspace, wsUUID, []RepoData{
+		{URL: wsOnly, Description: "workspace says ws"},
+		{URL: overlap, Description: "workspace's view of overlap"},
+	}); err != nil {
+		t.Fatalf("seed workspace bindings: %v", err)
+	}
+	if err := testHandler.setRepoBindingsForScope(ctx, repoScopeProject, projectA, []RepoData{
+		{URL: projOnly, Description: "project says proj"},
+		{URL: overlap, Description: "project's view of overlap"},
+	}); err != nil {
+		t.Fatalf("seed project bindings: %v", err)
+	}
+	if err := testHandler.setRepoBindingsForScope(ctx, repoScopeIssue, issueA, []RepoData{
+		{URL: issueOnly, Description: "issue says issue"},
+		{URL: overlap, Description: "issue's view of overlap"},
+	}); err != nil {
+		t.Fatalf("seed issue bindings: %v", err)
+	}
+
+	got, err := testHandler.loadOperationalRepos(ctx, []scopeKey{
+		{Type: repoScopeWorkspace, ID: wsUUID},
+		{Type: repoScopeProject, ID: projectA},
+		{Type: repoScopeIssue, ID: issueA},
+	})
+	if err != nil {
+		t.Fatalf("loadOperationalRepos: %v", err)
+	}
+
+	want := []RepoData{
+		{URL: issueOnly, Description: "issue says issue"},
+		{URL: overlap, Description: "issue's view of overlap"},
+		{URL: projOnly, Description: "project says proj"},
+		{URL: wsOnly, Description: "workspace says ws"},
+	}
+	sort.Slice(got, func(i, j int) bool { return got[i].URL < got[j].URL })
+	sort.Slice(want, func(i, j int) bool { return want[i].URL < want[j].URL })
+
+	if len(got) != len(want) {
+		t.Fatalf("len mismatch: got %d, want %d (%+v vs %+v)", len(got), len(want), got, want)
+	}
+	for i := range got {
+		if got[i].URL != want[i].URL || got[i].Description != want[i].Description {
+			t.Fatalf("entry %d mismatch: got %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestLoadOperationalReposForIssue_AppendsIssueScope locks the wiring
+// `loadOperationalReposForIssue` is responsible for: it must always include
+// the issue tier in the scope list it forwards to `loadOperationalRepos`.
+// Without this, an issue-scope binding wouldn't surface when a task claims
+// the issue, even though the helper-level test above passes (the union
+// resolver itself works fine). This guards the seam between the two layers.
+func TestLoadOperationalReposForIssue_AppendsIssueScope(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	wsUUID := parseUUID(testWorkspaceID)
+	issueUUID := parseUUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+
+	t.Cleanup(func() {
+		testHandler.Queries.DeleteRepoBindingsForScope(ctx, db.DeleteRepoBindingsForScopeParams{
+			ScopeType: repoScopeIssue,
+			ScopeID:   issueUUID,
+		})
+		testHandler.Queries.DeleteOrphanRepos(ctx)
+	})
+
+	const issueOnlyURL = "git@example.com:team/wiring-test-issue-only.git"
+	if err := testHandler.setRepoBindingsForScope(ctx, repoScopeIssue, issueUUID, []RepoData{
+		{URL: issueOnlyURL, Description: "issue scope only"},
+	}); err != nil {
+		t.Fatalf("seed issue binding: %v", err)
+	}
+
+	// Synthetic issue with no project — the helper should still walk the
+	// (workspace, issue) pair and surface the issue-scope binding.
+	issue := db.Issue{ID: issueUUID, WorkspaceID: wsUUID}
+	got, err := testHandler.loadOperationalReposForIssue(ctx, issue)
+	if err != nil {
+		t.Fatalf("loadOperationalReposForIssue: %v", err)
+	}
+	found := false
+	for _, r := range got {
+		if r.URL == issueOnlyURL && r.Description == "issue scope only" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("issue-scope binding did not surface through loadOperationalReposForIssue: %+v", got)
 	}
 }
 

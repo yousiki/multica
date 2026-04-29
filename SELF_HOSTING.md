@@ -14,19 +14,21 @@ Each user who runs AI agents locally also installs the **`multica` CLI** and run
 
 ## Quick Install (Recommended)
 
-This fork ships its own Docker images at `ghcr.io/yousiki/multica-{backend,web}` via the release workflow on `yousiki/multica`. The fastest path is to clone the fork and let `make selfhost` pull those images:
+This fork ships its own Docker images at `ghcr.io/yousiki/multica-{backend,web}` via the release workflow on `yousiki/multica`. The fastest path is to clone the fork and let `make selfhost` pull those images.
+
+### 1. Start the self-host stack
 
 ```bash
-# 1. Clone this fork and start the self-host stack (pulls fork images from GHCR)
 git clone https://github.com/yousiki/multica.git
 cd multica
 make selfhost
-
-# 2. Install the CLI (pick one for your platform — see below), then configure it
-multica setup self-host
 ```
 
-CLI install options (the binary itself is shared with upstream — protocol is the same, so you can use any of these regardless of which backend you point at):
+`make selfhost` creates `.env` from the example, generates a random `JWT_SECRET`, and pulls `ghcr.io/yousiki/multica-backend:latest` + `ghcr.io/yousiki/multica-web:latest`.
+
+### 2. Install the CLI
+
+The binary is shared with upstream — the protocol is the same, so any of these installers work against this fork's backend. Pick one for your platform:
 
 ```bash
 # macOS / Linux — Homebrew
@@ -39,7 +41,11 @@ curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/ins
 irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex
 ```
 
-`make selfhost` creates `.env` from the example, generates a random `JWT_SECRET`, and pulls `ghcr.io/yousiki/multica-backend:latest` + `ghcr.io/yousiki/multica-web:latest`.
+### 3. Configure the CLI, authenticate, and start the daemon
+
+```bash
+multica setup self-host
+```
 
 Open http://localhost:3000. To log in, configure `RESEND_API_KEY` in `.env` for email-based codes (recommended), or leave Resend unset and copy the generated code from the backend logs. See [Step 2 — Log In](#step-2--log-in) for details.
 

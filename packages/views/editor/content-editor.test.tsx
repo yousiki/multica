@@ -23,6 +23,13 @@ vi.mock("./bubble-menu", () => ({
   EditorBubbleMenu: () => null,
 }));
 
+// useOpenLink reaches for useNavigation + useWorkspaceSlug. The shell-focus
+// tests don't exercise link clicks, so a no-op stub is enough — and avoids
+// having to wrap every render in NavigationProvider.
+vi.mock("./utils/use-open-link", () => ({
+  useOpenLink: () => vi.fn(),
+}));
+
 vi.mock("@tiptap/react", () => ({
   useEditor: () => ({
     commands: {

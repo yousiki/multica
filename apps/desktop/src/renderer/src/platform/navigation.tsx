@@ -67,23 +67,75 @@ function tryRouteToOverlay(path: string, router?: DataRouter): boolean {
   return false;
 }
 
+export type NavigateMode = "push" | "replace" | "new-tab";
+
 /**
- * Intercept pushes that change workspace. Returns `true` if the navigation
- * was delegated to the tab store (caller should NOT proceed).
+ * The single internal-navigation entry point on desktop. Every path-based
+ * navigation — sidebar, cmd+k, AppLink, in-app `<a>` clicks, OS-notification
+ * IPC, editor markdown links — funnels through here, so the rules for
+ * cross-workspace dispatch live in exactly one place.
  *
- * This is the entry point that makes shared code platform-agnostic:
- * sidebar dropdown, cmd+k "switch workspace", post-delete redirects,
- * invite-accept flow — they all call `useNavigation().push(path)` with a
- * full workspace URL, and on desktop we translate "target slug differs
- * from active" into "switch the tab-group that's visible in the TabBar".
+ * Decision tree (in order):
+ *   1. `/login` push → kick off logout (preserves existing UX where pushing
+ *      `/login` is the "log me out" intent).
+ *   2. Overlay paths (`/workspaces/new`, `/onboarding`, `/invite/...`) →
+ *      open the window-level overlay; the tab tree stays put.
+ *   3. Cross-workspace path (path's leading slug ≠ active workspace) →
+ *      `tab-store.switchWorkspace(slug, path)`. We can't `router.navigate`
+ *      here: the active tab belongs to a different workspace's group, so
+ *      pushing /A/... onto a /B-tab's history would corrupt the per-tab
+ *      memory router. switchWorkspace either dedupes into A's existing
+ *      matching tab or seeds A's group with the new path.
+ *   4. Same-workspace `new-tab` mode → openTab + setActiveTab, like the
+ *      legacy openInNewTab adapter.
+ *   5. Same-workspace `push` / `replace` → forward to the tab's router.
+ *      Caller-supplied `router` (from `TabNavigationProvider`) wins;
+ *      otherwise we navigate the active tab's router.
+ *
+ * The cross-workspace branch absorbs what was a separate
+ * `tryRouteToOtherWorkspace` helper plus a pile of identical adapter logic
+ * across `DesktopNavigationProvider` and `TabNavigationProvider`. It also
+ * removes the only reason `multica:navigate` CustomEvent ever existed —
+ * any caller can now just call `navigateDesktopPath` (or
+ * `useNavigation().push/replace/openInNewTab`).
  */
-function tryRouteToOtherWorkspace(path: string): boolean {
+export function navigateDesktopPath(opts: {
+  path: string;
+  mode: NavigateMode;
+  title?: string;
+  /**
+   * Tab router to navigate for `push`/`replace`. When omitted, the active
+   * tab's router is used — the right default for shell-level callers
+   * (sidebar, IPC handlers) that aren't scoped to a specific tab.
+   */
+  router?: DataRouter;
+}): void {
+  const { path, mode, title, router } = opts;
+
+  if (path === "/login" && mode === "push") {
+    useAuthStore.getState().logout();
+    return;
+  }
+
+  const targetRouter = router ?? getActiveTab(useTabStore.getState())?.router;
+  if (tryRouteToOverlay(path, targetRouter)) return;
+
   const targetSlug = extractWorkspaceSlug(path);
-  if (!targetSlug) return false;
-  const { activeWorkspaceSlug, switchWorkspace } = useTabStore.getState();
-  if (targetSlug === activeWorkspaceSlug) return false;
-  switchWorkspace(targetSlug, path);
-  return true;
+  const store = useTabStore.getState();
+
+  if (targetSlug && targetSlug !== store.activeWorkspaceSlug) {
+    store.switchWorkspace(targetSlug, path);
+    return;
+  }
+
+  if (mode === "new-tab") {
+    const icon = resolveRouteIcon(path);
+    const tabId = store.openTab(path, title ?? path, icon);
+    if (tabId) store.setActiveTab(tabId);
+    return;
+  }
+
+  targetRouter?.navigate(path, { replace: mode === "replace" });
 }
 
 /**
@@ -134,50 +186,19 @@ export function DesktopNavigationProvider({
 
   const adapter: NavigationAdapter = useMemo(
     () => ({
-      push: (path: string) => {
-        if (path === "/login") {
-          useAuthStore.getState().logout();
-          return;
-        }
-        const active = currentActiveTab();
-        if (tryRouteToOverlay(path, active?.router)) return;
-        if (tryRouteToOtherWorkspace(path)) return;
-        active?.router.navigate(path);
-      },
-      replace: (path: string) => {
-        const active = currentActiveTab();
-        if (tryRouteToOverlay(path, active?.router)) return;
-        if (tryRouteToOtherWorkspace(path)) return;
-        active?.router.navigate(path, { replace: true });
-      },
-      back: () => {
-        currentActiveTab()?.router.navigate(-1);
-      },
+      push: (path) => navigateDesktopPath({ path, mode: "push" }),
+      replace: (path) => navigateDesktopPath({ path, mode: "replace" }),
+      back: () => getActiveTab(useTabStore.getState())?.router.navigate(-1),
       pathname: location.pathname,
       searchParams: new URLSearchParams(location.search),
-      openInNewTab: (path: string, title?: string) => {
-        // Cross-workspace "open in new tab" switches workspace and opens
-        // the path there; same-workspace just adds a tab in the current group.
-        const slug = extractWorkspaceSlug(path);
-        const store = useTabStore.getState();
-        if (slug && slug !== store.activeWorkspaceSlug) {
-          store.switchWorkspace(slug, path);
-          return;
-        }
-        const icon = resolveRouteIcon(path);
-        const tabId = store.openTab(path, title ?? path, icon);
-        if (tabId) store.setActiveTab(tabId);
-      },
-      getShareableUrl: (path: string) => `${APP_URL}${path}`,
+      openInNewTab: (path, title) =>
+        navigateDesktopPath({ path, mode: "new-tab", title }),
+      getShareableUrl: (path) => `${APP_URL}${path}`,
     }),
     [location],
   );
 
   return <NavigationProvider value={adapter}>{children}</NavigationProvider>;
-}
-
-function currentActiveTab() {
-  return getActiveTab(useTabStore.getState());
 }
 
 /**
@@ -204,31 +225,14 @@ export function TabNavigationProvider({
 
   const adapter: NavigationAdapter = useMemo(
     () => ({
-      push: (path: string) => {
-        if (tryRouteToOverlay(path, router)) return;
-        if (tryRouteToOtherWorkspace(path)) return;
-        router.navigate(path);
-      },
-      replace: (path: string) => {
-        if (tryRouteToOverlay(path, router)) return;
-        if (tryRouteToOtherWorkspace(path)) return;
-        router.navigate(path, { replace: true });
-      },
+      push: (path) => navigateDesktopPath({ path, mode: "push", router }),
+      replace: (path) => navigateDesktopPath({ path, mode: "replace", router }),
       back: () => router.navigate(-1),
       pathname: location.pathname,
       searchParams: new URLSearchParams(location.search),
-      openInNewTab: (path: string, title?: string) => {
-        const slug = extractWorkspaceSlug(path);
-        const store = useTabStore.getState();
-        if (slug && slug !== store.activeWorkspaceSlug) {
-          store.switchWorkspace(slug, path);
-          return;
-        }
-        const icon = resolveRouteIcon(path);
-        const tabId = store.openTab(path, title ?? path, icon);
-        if (tabId) store.setActiveTab(tabId);
-      },
-      getShareableUrl: (path: string) => `${APP_URL}${path}`,
+      openInNewTab: (path, title) =>
+        navigateDesktopPath({ path, mode: "new-tab", title, router }),
+      getShareableUrl: (path) => `${APP_URL}${path}`,
     }),
     [router, location],
   );

@@ -35,12 +35,12 @@ import {
 import { useEditor, EditorContent } from "@tiptap/react";
 import { cn } from "@multica/ui/lib/utils";
 import type { UploadResult } from "@multica/core/hooks/use-file-upload";
-import { useWorkspaceSlug } from "@multica/core/paths";
 import { useQueryClient } from "@tanstack/react-query";
 import { createEditorExtensions } from "./extensions";
 import { uploadAndInsertFile } from "./extensions/file-upload";
 import { preprocessMarkdown } from "./utils/preprocess";
-import { openLink, isMentionHref } from "./utils/link-handler";
+import { isMentionHref } from "./utils/link-handler";
+import { useOpenLink } from "./utils/use-open-link";
 import { EditorBubbleMenu } from "./bubble-menu";
 import { useLinkHover, LinkHoverCard } from "./link-hover-card";
 import "katex/dist/katex.min.css";
@@ -130,12 +130,13 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     const prevContentRef = useRef(defaultValue);
     const lastEmittedRef = useRef<string | null>(null);
 
-    // Current workspace slug kept in a ref so the click handler always sees the
-    // latest value without recreating the editor. Used by openLink to prefix
-    // legacy /issues/... style paths that lack a workspace slug.
-    const workspaceSlug = useWorkspaceSlug();
-    const workspaceSlugRef = useRef(workspaceSlug);
-    workspaceSlugRef.current = workspaceSlug;
+    // openLink handler kept in a ref so the ProseMirror click handler always
+    // sees the latest closure (current workspace slug + push fn) without
+    // recreating the editor. The hook itself reads useWorkspaceSlug and
+    // useNavigation, mirroring the historical inline ref pattern.
+    const openLink = useOpenLink();
+    const openLinkRef = useRef(openLink);
+    openLinkRef.current = openLink;
 
     // Keep refs in sync without recreating editor
     onUpdateRef.current = onUpdate;
@@ -190,7 +191,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
             if (!href || isMentionHref(href)) return false;
 
             event.preventDefault();
-            openLink(href, workspaceSlugRef.current);
+            openLinkRef.current(href);
             return true;
           },
         },

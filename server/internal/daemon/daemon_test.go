@@ -723,7 +723,7 @@ func TestEnsureRepoReady_TaskRepoAuthorizesAndSyncs(t *testing.T) {
 	})
 
 	// Workspace exists but lists no repos at workspace scope.
-	d.workspaces["ws-1"] = newWorkspaceState("ws-1", nil, "v1", nil)
+	d.workspaces["ws-1"] = newWorkspaceState("ws-1", nil, "v1", nil, nil)
 
 	// Server-side claim resolved a project-bound repo into task.Repos. The
 	// daemon's runTask normally calls registerTaskRepos for us; this test
@@ -767,7 +767,7 @@ func TestRegisterTaskRepos_PerTaskIsolation(t *testing.T) {
 	d := newRepoReadyTestDaemon(t, func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})
-	d.workspaces["ws-1"] = newWorkspaceState("ws-1", nil, "v1", nil)
+	d.workspaces["ws-1"] = newWorkspaceState("ws-1", nil, "v1", nil, nil)
 
 	d.registerTaskRepos("ws-1", "task-A", []RepoData{{URL: "repo-a"}})
 	d.registerTaskRepos("ws-1", "task-B", []RepoData{{URL: "repo-b"}})

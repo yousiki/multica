@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  CircleCheck,
   MoreHorizontal,
   PanelRight,
   Pin,
@@ -139,6 +140,8 @@ function formatTokenCount(n: number): string {
 interface IssueDetailProps {
   issueId: string;
   onDelete?: () => void;
+  /** Called after the issue is marked as done via the toolbar button. */
+  onDone?: () => void;
   defaultSidebarOpen?: boolean;
   layoutId?: string;
   /** When set, the issue detail will auto-scroll to this comment and briefly highlight it. */
@@ -149,7 +152,7 @@ interface IssueDetailProps {
 // IssueDetail
 // ---------------------------------------------------------------------------
 
-export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId }: IssueDetailProps) {
+export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId }: IssueDetailProps) {
   const id = issueId;
   const router = useNavigation();
   const user = useAuthStore((s) => s.user);
@@ -160,12 +163,17 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
   const wsId = useWorkspaceId();
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
-  // Repo-binding edits gated to admin/owner. Same shape the project sidebar
-  // uses — an issue-scope binding expands the operational surface an agent
-  // sees, so it stays an elevated-role action.
-  const currentMember = members.find((m) => m.user_id === user?.id) ?? null;
-  const canManageIssueRepos =
-    currentMember?.role === "owner" || currentMember?.role === "admin";
+  // Owner/admin role drives two elevated capabilities on this page:
+  //  - canManageIssueRepos: issue-scope repo binding edits (fork-only feature).
+  //  - canModerateComments: moderate comments authored by anyone, mirrors
+  //    backend `comment.go:507-512`. Computed once so per-comment rendering
+  //    doesn't re-derive it for every row.
+  const currentUserRole =
+    members.find((m) => m.user_id === user?.id)?.role ?? null;
+  const isOwnerOrAdmin =
+    currentUserRole === "owner" || currentUserRole === "admin";
+  const canManageIssueRepos = isOwnerOrAdmin;
+  const canModerateComments = isOwnerOrAdmin;
   const { data: allIssues = [] } = useQuery(issueListOptions(wsId));
   const { getActorName } = useActorName();
   const { uploadWithToast } = useFileUpload(api);
@@ -280,7 +288,7 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
     if (el) {
       didHighlightRef.current = highlightCommentId;
       requestAnimationFrame(() => {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.scrollIntoView({ behavior: "instant", block: "center" });
         setHighlightedId(highlightCommentId);
         const timer = setTimeout(() => setHighlightedId(null), 2000);
         return () => clearTimeout(timer);
@@ -524,6 +532,23 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
             </span>
           </div>
           <div className="flex items-center gap-1 shrink-0">
+            {issue.status !== "done" && issue.status !== "cancelled" && (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="text-muted-foreground"
+                      onClick={() => { handleUpdateField({ status: "done" }); onDone?.(); }}
+                    >
+                      <CircleCheck />
+                    </Button>
+                  }
+                />
+                <TooltipContent side="bottom">Mark as done</TooltipContent>
+              </Tooltip>
+            )}
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -918,6 +943,7 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
                           entry={entry}
                           allReplies={repliesByParent}
                           currentUserId={user?.id}
+                          canModerate={canModerateComments}
                           onReply={submitReply}
                           onEdit={editComment}
                           onDelete={deleteComment}

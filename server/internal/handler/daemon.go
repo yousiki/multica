@@ -335,10 +335,20 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	repoResp := workspaceReposResponse(req.WorkspaceID, repos)
+
+	// Include workspace settings so the daemon can honour feature toggles
+	// (e.g. co_authored_by_enabled for the prepare-commit-msg hook).
+	var settings json.RawMessage
+	if len(ws.Settings) > 0 {
+		settings = json.RawMessage(ws.Settings)
+	}
+
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"runtimes":      resp,
 		"repos":         repoResp.Repos,
 		"repos_version": repoResp.ReposVersion,
+		"settings":      settings,
 	})
 }
 
